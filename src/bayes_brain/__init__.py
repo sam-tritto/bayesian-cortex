@@ -1,6 +1,8 @@
 from bayes_brain.embeddings import (
     ContextEmbedder,
+    GeminiEmbedder,
     LocalSentenceTransformerEmbedder,
+    OpenAIEmbedder,
     VectorContextStore,
     VectorStoreProtocol,
 )
@@ -20,7 +22,9 @@ __all__ = [
     "SQLiteStorage",
     "RedisStorage",
     "ContextEmbedder",
+    "GeminiEmbedder",
     "LocalSentenceTransformerEmbedder",
+    "OpenAIEmbedder",
     "VectorContextStore",
     "VectorStoreProtocol",
     "create_mcp_server",
