@@ -4,7 +4,7 @@ import pytest
 
 from mcp.server.fastmcp import FastMCP
 
-from bayes_brain.mcp_server import create_mcp_server
+from bayesian_cortex.mcp_server import create_mcp_server
 
 
 def test_mcp_server_creation():
@@ -72,8 +72,8 @@ async def test_mcp_server_administrative_features():
         # Identify which tool was updated
         updated_tool = "tool1" if t1_params != {"alpha": 1.0, "beta": 1.0} else "tool2"
 
-        # 4. Check the bayes://metrics resource
-        res_metrics = await mcp.read_resource("bayes://metrics")
+        # 4. Check the cortex://metrics resource
+        res_metrics = await mcp.read_resource("cortex://metrics")
         metrics_text = res_metrics[0].content
         assert "# Bayes Brain Multi-Armed Bandit Metrics" in metrics_text
         assert "Total Context Clusters" in metrics_text

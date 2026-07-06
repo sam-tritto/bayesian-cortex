@@ -1,7 +1,7 @@
 [project]
-name = "bayes-brain"
+name = "bayesian-cortex"
 version = "0.1.0"
-description = "Dynamic Tool Routing via Bayesian Bandits"
+description = "Dynamic Agent Routing via Contextual Bayesian Bandits"
 readme = "README.md"
 authors = [
     { name = "sam-tritto", email = "59342606+sam-tritto@users.noreply.github.com" }

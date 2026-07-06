@@ -8,11 +8,11 @@ from scipy.stats import beta as scipy_beta
 
 from mcp.server.fastmcp import FastMCP
 
-from bayes_brain.router import (
+from bayesian_cortex.router import (
     AsyncBayesianRouter,
     BayesianRouter,
 )
-from bayes_brain.storage import AsyncSQLiteStorage, SQLiteStorage
+from bayesian_cortex.storage import AsyncSQLiteStorage, SQLiteStorage
 
 
 async def _get_all_beliefs(
@@ -21,7 +21,7 @@ async def _get_all_beliefs(
     """
     Retrieve all beliefs from the storage backend of the router.
     """
-    from bayes_brain.storage import (
+    from bayesian_cortex.storage import (
         AsyncInMemoryStorage,
         AsyncRedisStorage,
         AsyncSQLiteStorage,
@@ -378,7 +378,7 @@ def generate_history_svg(logs: list, available_candidates: list, width: int = 60
 
 
 def create_mcp_server(
-    server_name: str = "BayesBrain",
+    server_name: str = "BayesianCortex",
     db_path: str = "mcp_bandit.db",
     candidates: Optional[List[str]] = None,
     candidate_executor: Optional[Callable[[str, str], Union[Tuple[str, bool], str]]] = None,
@@ -531,7 +531,7 @@ def create_mcp_server(
         await router.storage.update_candidate_params(context_key, candidate, 1.0, 1.0)
         return f"Beliefs for candidate '{candidate}' under context key '{context_key}' have been reset to (1.0, 1.0)."
 
-    @mcp.resource("bayes://metrics")
+    @mcp.resource("cortex://metrics")
     async def get_metrics() -> str:
         """
         Expose a JSON/Markdown dashboard of current statistics and beliefs.

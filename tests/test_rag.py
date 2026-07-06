@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import Mock
 
-from bayes_brain import (
+from bayesian_cortex import (
     BayesianRouter,
     AsyncBayesianRouter,
     check_citation,
@@ -10,7 +10,7 @@ from bayes_brain import (
     process_ui_feedback,
     aprocess_ui_feedback,
 )
-from bayes_brain.rag import DEFAULT_STOP_WORDS, DEFAULT_FALLBACK_PATTERNS
+from bayesian_cortex.rag import DEFAULT_STOP_WORDS, DEFAULT_FALLBACK_PATTERNS
 
 
 def test_check_citation_default_patterns():

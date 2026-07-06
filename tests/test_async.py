@@ -7,14 +7,14 @@ import urllib.error
 import pytest
 import numpy as np
 
-from bayes_brain.embeddings import (
+from bayesian_cortex.embeddings import (
     AsyncVectorContextStore,
     AsyncSQLiteVectorStore,
     GeminiEmbedder,
     OpenAIEmbedder,
 )
-from bayes_brain.router import AsyncBayesianRouter
-from bayes_brain.storage import (
+from bayesian_cortex.router import AsyncBayesianRouter
+from bayesian_cortex.storage import (
     AsyncInMemoryStorage,
     AsyncSQLiteStorage,
     AsyncRedisStorage,
@@ -109,15 +109,15 @@ async def test_async_redis_storage():
     # hget mockup
     async def mock_hget(key, field):
         lookup = {
-            "bayes_brain:ctx_1:tool_1:alpha": "10.0",
-            "bayes_brain:ctx_1:tool_1:beta": "5.0",
+            "bayesian_cortex:ctx_1:tool_1:alpha": "10.0",
+            "bayesian_cortex:ctx_1:tool_1:beta": "5.0",
         }
         return lookup.get(f"{key}:{field}", None)
 
     mock_client.hget.side_effect = mock_hget
     mock_client.get.return_value = b"meta_value"
 
-    storage = AsyncRedisStorage(mock_client, prefix="bayes_brain:")
+    storage = AsyncRedisStorage(mock_client, prefix="bayesian_cortex:")
 
     # Get params
     a, b = await storage.get_candidate_params("ctx_1", "tool_1")
@@ -127,7 +127,7 @@ async def test_async_redis_storage():
     # Update params
     await storage.update_candidate_params("ctx_1", "tool_1", 12.0, 6.0)
     mock_client.hset.assert_called_with(
-        "bayes_brain:ctx_1",
+        "bayesian_cortex:ctx_1",
         mapping={"tool_1:alpha": "12.0", "tool_1:beta": "6.0"}
     )
 
@@ -136,7 +136,7 @@ async def test_async_redis_storage():
     assert new_a == 1.5
     assert new_b == 2.5
     mock_script.assert_called_with(
-        keys=["bayes_brain:ctx_1"],
+        keys=["bayesian_cortex:ctx_1"],
         args=["tool_1:alpha", "tool_1:beta", "0.9", "1.0"]
     )
 

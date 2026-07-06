@@ -58,7 +58,7 @@ class VectorStoreProtocol(Protocol):
 class LocalSentenceTransformerEmbedder:
     """
     Batteries-included embedder using sentence-transformers.
-    Loaded lazily, requiring `pip install 'bayes-brain[local-ml]'`.
+    Loaded lazily, requiring `pip install 'bayesian-cortex[local-ml]'`.
     """
 
     def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
@@ -73,7 +73,7 @@ class LocalSentenceTransformerEmbedder:
             except ImportError:
                 raise ImportError(
                     "The sentence-transformers package is required for LocalSentenceTransformerEmbedder. "
-                    "Please install it with: pip install 'bayes-brain[local-ml]'"
+                    "Please install it with: pip install 'bayesian-cortex[local-ml]'"
                 )
             self._model = SentenceTransformer(self.model_name)
         return self._model
@@ -675,7 +675,7 @@ class SQLiteVectorStore:
 
     def __init__(
         self,
-        db_path: str = "bayes_brain_vectors.db",
+        db_path: str = "bayesian_cortex_vectors.db",
         dimension: int = 384,
         table_name: str = "vec_context_store",
     ) -> None:
@@ -882,7 +882,7 @@ class AsyncSQLiteVectorStore:
 
     def __init__(
         self,
-        db_path: str = "bayes_brain_vectors.db",
+        db_path: str = "bayesian_cortex_vectors.db",
         dimension: int = 384,
         table_name: str = "vec_context_store",
     ) -> None:

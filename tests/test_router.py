@@ -2,9 +2,9 @@ from typing import Optional, Sequence
 
 import pytest
 
-from bayes_brain.embeddings import VectorContextStore
-from bayes_brain.router import BayesianRouter
-from bayes_brain.storage import InMemoryStorage
+from bayesian_cortex.embeddings import VectorContextStore
+from bayesian_cortex.router import BayesianRouter
+from bayesian_cortex.storage import InMemoryStorage
 
 
 def test_vector_context_store():

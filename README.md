@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="assets/logo.png" alt="BayesBrain Logo" width="400">
+  <img src="assets/logo.png" alt="BayesianCortex Logo" width="400">
 </p>
 
-# BayesBrain: Dynamic Agent Routing via Contextual Bayesian Bandits
+# BayesianCortex: Dynamic Agent Routing via Contextual Bayesian Bandits
 
-In intelligent agent systems, routing decisions represent the core runtime engine. **BayesBrain** treats routing as a **Contextual Multi-Armed Bandit** using **Thompson Sampling** (or **Upper Confidence Bound**) with exact conjugate updates. It dynamically learns the most reliable option under semantic context clusters, adapting in real time to failures, hallucinations, or shifting environment dynamics.
+In intelligent agent systems, routing decisions represent the core runtime engine. **BayesianCortex** treats routing as a **Contextual Multi-Armed Bandit** using **Thompson Sampling** (or **Upper Confidence Bound**) with exact conjugate updates. It dynamically learns the most reliable option under semantic context clusters, adapting in real time to failures, hallucinations, or shifting environment dynamics.
 
-BayesBrain completes what AI architects call the **"Golden Triad" of Agent Autonomy**:
+BayesianCortex completes what AI architects call the **"Golden Triad" of Agent Autonomy**:
 * **Tools (The Hands)**: Discrete, deterministic actions (e.g., SQL execution, APIs, script runners).
 * **Skills (The Cognitive Engine)**: Heuristic, prompt-driven reasoning workflows (e.g., specialized system prompts, agentic SOPs).
 * **RAG (The Memory)**: Dynamic, context-dependent knowledge retrieval (e.g., specialized vector indices, BM25 vs. GraphRAG strategies).
@@ -15,7 +15,7 @@ BayesBrain completes what AI architects call the **"Golden Triad" of Agent Auton
 
 ## The Core Math Engine
 
-To prevent runtime latency, BayesBrain avoids heavy Markov Chain Monte Carlo (MCMC) sampling (e.g., PyMC or Stan). Instead, it uses exact closed-form updates and supports two main mathematical modes: **Context Clustering** (Beta-Binomial) and **Linear Contextual Bandits** (LinTS / LinUCB).
+To prevent runtime latency, BayesianCortex avoids heavy Markov Chain Monte Carlo (MCMC) sampling (e.g., PyMC or Stan). Instead, it uses exact closed-form updates and supports two main mathematical modes: **Context Clustering** (Beta-Binomial) and **Linear Contextual Bandits** (LinTS / LinUCB).
 
 ### 1. Context Clustering Mode (Beta-Binomial Conjugate Pair)
 Each candidate $i$ in a context cluster is modeled as a Beta distribution representing the belief of its success probability:
@@ -31,7 +31,7 @@ Each candidate $i$ in a context cluster is modeled as a Beta distribution repres
    - **Failure**: $\beta_i \leftarrow \beta_i + (1 - \text{reward})$
 
 #### Handling Non-Stationary Environments (Drifting APIs)
-If an API starts failing or degrades over time, historical successes should not dominate the routing indefinitely. BayesBrain applies an exponential decay factor $\gamma \in (0, 1]$ on historical updates prior to adding new rewards:
+If an API starts failing or degrades over time, historical successes should not dominate the routing indefinitely. BayesianCortex applies an exponential decay factor $\gamma \in (0, 1]$ on historical updates prior to adding new rewards:
 $$\alpha_t = \max(1.0, \gamma \alpha_{t-1} + \text{reward})$$
 $$\beta_t = \max(1.0, \gamma \beta_{t-1} + (1 - \text{reward}))$$
 
@@ -54,7 +54,7 @@ Instead of partitioning tasks into discrete clusters, the linear modes learn a l
 
 ## Architectural Overview
 
-BayesBrain is decoupled from your execution layer, acting as a lightweight interceptor/middleware:
+BayesianCortex is decoupled from your execution layer, acting as a lightweight interceptor/middleware:
 
 ```
                        [ User Prompt ]
@@ -91,10 +91,10 @@ Install using `uv` or standard pip:
 
 ```bash
 # Core package (In-memory, SQLite, and Redis support)
-uv pip install bayes-brain
+uv pip install bayesian-cortex
 
 # Install with local embedding support
-uv pip install "bayes-brain[local-ml]"
+uv pip install "bayesian-cortex[local-ml]"
 ```
 
 For advanced features, ensure the following database dependencies are satisfied:
@@ -109,11 +109,11 @@ For advanced features, ensure the following database dependencies are satisfied:
 
 ### Synchronous API
 
-By supporting both Candidates and Skills, `bayes_brain` manages routing uncertainty under a single unified class:
+By supporting both Candidates and Skills, `bayesian_cortex` manages routing uncertainty under a single unified class:
 
 ```python
-from bayes_brain import BayesianRouter
-from bayes_brain.embeddings import GeminiEmbedder
+from bayesian_cortex import BayesianRouter
+from bayesian_cortex.embeddings import GeminiEmbedder
 
 # 1. Initialize router using auto-configured SQLite backend
 embedder = GeminiEmbedder(model_name="models/text-embedding-004")
@@ -160,7 +160,7 @@ chosen_kb = router.route(
 print(f"Routed to RAG index: {chosen_kb}")
 
 # Retrieve text chunks from chosen_kb, run the LLM, and evaluate success:
-from bayes_brain import evaluate_rag_success
+from bayesian_cortex import evaluate_rag_success
 retrieved_chunks = ["Parental leave rollover allows up to 5 days rollover..."]
 generated_response = "Our policy allows you to roll over up to 5 days of parental leave."
 
@@ -182,8 +182,8 @@ For asynchronous, non-blocking workflows in web applications (FastAPI, FastMCP) 
 
 ```python
 import asyncio
-from bayes_brain import AsyncBayesianRouter
-from bayes_brain.embeddings import GeminiEmbedder
+from bayesian_cortex import AsyncBayesianRouter
+from bayesian_cortex.embeddings import GeminiEmbedder
 
 async def main():
     embedder = GeminiEmbedder(model_name="models/text-embedding-004")
@@ -216,7 +216,7 @@ async def main():
     print(f"Routed to: {chosen_kb}")
 
     # Async RAG Feedback (using citation check & token overlap)
-    from bayes_brain import evaluate_rag_success
+    from bayesian_cortex import evaluate_rag_success
     success = evaluate_rag_success(
         response="Our policy allows 5 days rollover.",
         source_chunks=["Parental leave rollover allows up to 5 days rollover..."]
@@ -235,12 +235,12 @@ asyncio.run(main())
 ## Core Features & Advanced Operations
 
 ### 🔌 Persistent, Native Vector Storage (`sqlite-vec`)
-To avoid loading all context vectors into memory, BayesBrain supports native database-level vector indexing and search via the `sqlite-vec` extension:
-* **Sync Store**: [SQLiteVectorStore](file:///Users/sam/Locals%20Only/bayes-brain/src/bayes_brain/embeddings.py#L670-L789)
-* **Async Store**: [AsyncSQLiteVectorStore](file:///Users/sam/Locals%20Only/bayes-brain/src/bayes_brain/embeddings.py#L877-L980)
+To avoid loading all context vectors into memory, BayesianCortex supports native database-level vector indexing and search via the `sqlite-vec` extension:
+* **Sync Store**: [SQLiteVectorStore](file:///Users/sam/Locals%20Only/bayesian-cortex/src/bayesian_cortex/embeddings.py#L670-L789)
+* **Async Store**: [AsyncSQLiteVectorStore](file:///Users/sam/Locals%20Only/bayesian-cortex/src/bayesian_cortex/embeddings.py#L877-L980)
 
 ```python
-from bayes_brain.embeddings import SQLiteVectorStore
+from bayesian_cortex.embeddings import SQLiteVectorStore
 
 # Creates a vec0 virtual table for cosine-distance vector matches
 vector_store = SQLiteVectorStore(
@@ -271,7 +271,7 @@ router = BayesianRouter(
 ```
 
 ### 🤝 Shared-Parameter (Hybrid) Contextual Bandits
-For setups where you want to generalize learning across candidates (e.g., in a cold-start situation where a new candidate is introduced), BayesBrain implements a **Shared-Parameter (Hybrid) Contextual Bandit**.
+For setups where you want to generalize learning across candidates (e.g., in a cold-start situation where a new candidate is introduced), BayesianCortex implements a **Shared-Parameter (Hybrid) Contextual Bandit**.
 
 Instead of maintaining disjoint parameter matrices for each individual candidate, the hybrid mode learns a single unified parameter set $w \in \mathbb{R}^{d_{ctx} + d_{candidate} + 1}$ stored under a shared database key (`__shared_hybrid__`). For each routing decision:
 1. Task context $x_c$ and candidate candidate embeddings $t_a$ are resolved.
@@ -331,7 +331,7 @@ router.feedback_batch(feedbacks)
 * **Database Optimization**: SQLite backends chunk parameters into sizes of 200 and wrap requests in an immediate transaction (`executemany`). Redis backends execute Lua scripts inside pipeline blocks.
 
 ### 🛡️ Tamper-Proof Signed Trace IDs
-To prevent client-side reward-poisoning and tampering attacks in decoupled or asynchronous setups, BayesBrain signs trace IDs using an HMAC-SHA256 signature.
+To prevent client-side reward-poisoning and tampering attacks in decoupled or asynchronous setups, BayesianCortex signs trace IDs using an HMAC-SHA256 signature.
 
 ```python
 router = BayesianRouter(
@@ -371,7 +371,7 @@ router = BayesianRouter(
 ```
 
 ### ⚡ High-Concurrency & High-Performance SQLite Backend
-For production use-cases, the SQLite storage backends ([SQLiteStorage](file:///Users/sam/Locals%20Only/bayes-brain/src/bayes_brain/storage.py#L387) and [AsyncSQLiteStorage](file:///Users/sam/Locals%20Only/bayes-brain/src/bayes_brain/storage.py#L1642)) are built for concurrent, lock-free performance:
+For production use-cases, the SQLite storage backends ([SQLiteStorage](file:///Users/sam/Locals%20Only/bayesian-cortex/src/bayesian_cortex/storage.py#L387) and [AsyncSQLiteStorage](file:///Users/sam/Locals%20Only/bayesian-cortex/src/bayesian_cortex/storage.py#L1642)) are built for concurrent, lock-free performance:
 * **Write-Ahead Logging (WAL)**: Initialized with `PRAGMA journal_mode=WAL;` to dramatically improve read/write concurrency.
 * **Busy Timeout**: Initialized with `PRAGMA busy_timeout=5000;` to handle transient write contentions.
 * **Connection Pooling (`AsyncSQLiteConnectionPool`)**: `AsyncSQLiteStorage` manages an elastic pool of up to 10 concurrent database connections, returning them to the pool after operations finish, and rolling back uncommitted transactions automatically.
@@ -382,14 +382,14 @@ When operating without an embedder, or if API embedder requests fail, the router
 
 ### 🧠 Automated RAG Routing & Feedback Loops (Memory)
 
-RAG routing requires evaluating whether a given knowledge base or retrieval strategy succeeded. Because RAG fails silently (returning irrelevant noise or hallucinations rather than throwing errors), BayesBrain provides helper utilities to automate feedback loops and handle direct user UI feedback (such as Thumbs Up/Down components).
+RAG routing requires evaluating whether a given knowledge base or retrieval strategy succeeded. Because RAG fails silently (returning irrelevant noise or hallucinations rather than throwing errors), BayesianCortex provides helper utilities to automate feedback loops and handle direct user UI feedback (such as Thumbs Up/Down components).
 
 #### 1. Automated RAG Success Metrics
 
 Combine citation checks (checking if the LLM returned a standard fallback phrase) and token-overlap faithfulness metrics:
 
 ```python
-from bayes_brain import evaluate_rag_success
+from bayesian_cortex import evaluate_rag_success
 
 retrieved_sources = [
     "Employees get 4 weeks of paid vacation yearly.",
@@ -420,7 +420,7 @@ For scenarios where success is determined by the end user clicking thumbs up/dow
 These helpers map diverse UI states (`"thumbs_up"`, `"like"`, `"dislike"`, `True`, `False`, `1`, `0`) to a `1.0` or `0.0` reward and verify the HMAC signature of the trace ID.
 
 ```python
-from bayes_brain import process_ui_feedback
+from bayesian_cortex import process_ui_feedback
 
 # 1. Route the query and obtain a signed trace ID (safeguards against client-side reward poisoning)
 chosen_source, trace_id = router.route_with_trace(
@@ -444,14 +444,14 @@ process_ui_feedback(
 
 Optimize candidate/skill selection in Claude Code or other MCP hosts by registering a Meta-Candidate to handle dynamic routing, alongside administrative candidates to manage and monitor bandit beliefs.
 
-You can configure and expose these endpoints using [create_mcp_server](file:///Users/sam/Locals%20Only/bayes-brain/src/bayes_brain/mcp_server.py#L375):
+You can configure and expose these endpoints using [create_mcp_server](file:///Users/sam/Locals%20Only/bayesian-cortex/src/bayesian_cortex/mcp_server.py#L375):
 
 ```python
-from bayes_brain.mcp_server import create_mcp_server
+from bayesian_cortex.mcp_server import create_mcp_server
 
 # Build the FastMCP server
 mcp = create_mcp_server(
-    server_name="BayesBrain",
+    server_name="BayesianCortex",
     db_path="mcp_bandit.db",
     candidates=["local_pytest", "docker_sandbox", "fallback_api"]
 )
@@ -464,10 +464,10 @@ mcp = create_mcp_server(
 | `execute_adaptive_action` | `Tool` | Thompson sampling/UCB routes incoming tasks to the best sub-candidate/skill candidate and automatically applies execution feedback. |
 | `get_candidate_beliefs` | `Tool` | Retrieve current posterior $\alpha$ and $\beta$ beliefs for all candidate candidates/skills under a given context (resolving context-specific priors). |
 | `reset_candidate_beliefs` | `Tool` | Reset the beliefs back to the default prior for a candidate/skill under a context. |
-| `bayes://metrics` | `Resource` | Exposes a Markdown Dashboard with context clusters, expected success rates, and raw telemetry metrics. |
+| `cortex://metrics` | `Resource` | Exposes a Markdown Dashboard with context clusters, expected success rates, and raw telemetry metrics. |
 
 ### Visual Diagnostics on the Metrics Dashboard
-The `bayes://metrics` dashboard exposes rich, live visuals to monitor routing decisions and distributions in real time:
+The `cortex://metrics` dashboard exposes rich, live visuals to monitor routing decisions and distributions in real time:
 * **ASCII Sparklines**: Displays inline unicode block characters (e.g. ` ▂▃▅▇█▆▄▂`) representing the shape of the $\text{Beta}(\alpha, \beta)$ probability distribution next to each candidate/skill in the context clusters table.
 * **Beta PDF SVG Charts**: Renders custom inline SVG charts mapping probability density curves for all candidate candidates/skills under each context cluster (utilizing SciPy's Beta stats model), complete with colors, legends, labels, and coordinate grids.
 * **Recent Executions Log**: Lists the 20 most recent routing executions chronologically, detailing the Trace ID, Timestamp, Context Cluster, Selected Candidate/Skill, and Reward feedback outcome.

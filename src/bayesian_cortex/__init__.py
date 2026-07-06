@@ -1,4 +1,4 @@
-from bayes_brain.embeddings import (
+from bayesian_cortex.embeddings import (
     AsyncContextEmbedder,
     AsyncSQLiteVectorStore,
     AsyncVectorContextStore,
@@ -11,19 +11,19 @@ from bayes_brain.embeddings import (
     VectorContextStore,
     VectorStoreProtocol,
 )
-from bayes_brain.mcp_server import create_mcp_server
-from bayes_brain.rag import (
+from bayesian_cortex.mcp_server import create_mcp_server
+from bayesian_cortex.rag import (
     aprocess_ui_feedback,
     calculate_faithfulness,
     check_citation,
     evaluate_rag_success,
     process_ui_feedback,
 )
-from bayes_brain.router import (
+from bayesian_cortex.router import (
     AsyncBayesianRouter,
     BayesianRouter,
 )
-from bayes_brain.storage import (
+from bayesian_cortex.storage import (
     AsyncBaseStorage,
     AsyncInMemoryStorage,
     AsyncRedisStorage,

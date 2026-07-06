@@ -2,11 +2,11 @@ import pytest
 import os
 from unittest.mock import MagicMock
 
-from bayes_brain import (
+from bayesian_cortex import (
     BayesianRouter,
     AsyncBayesianRouter,
 )
-from bayes_brain.storage import (
+from bayesian_cortex.storage import (
     InMemoryStorage,
     SQLiteStorage,
     AsyncInMemoryStorage,

@@ -3,7 +3,7 @@ import urllib.error
 from unittest.mock import MagicMock, patch
 import pytest
 
-from bayes_brain.embeddings import GeminiEmbedder, OpenAIEmbedder, SQLiteVectorStore
+from bayesian_cortex.embeddings import GeminiEmbedder, OpenAIEmbedder, SQLiteVectorStore
 
 
 def test_gemini_embedder_missing_key():
@@ -278,8 +278,8 @@ def test_sqlite_vector_store_missing_sqlite_vec(tmp_path):
 
 
 def test_router_with_sqlite_vector_store(tmp_path):
-    from bayes_brain.router import BayesianRouter
-    from bayes_brain.storage import InMemoryStorage
+    from bayesian_cortex.router import BayesianRouter
+    from bayesian_cortex.storage import InMemoryStorage
     
     class MockEmbedder:
         def embed_query(self, text: str) -> list[float]:

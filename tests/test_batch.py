@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, AsyncMock
 import pytest
 import numpy as np
 
-from bayes_brain.storage import (
+from bayesian_cortex.storage import (
     InMemoryStorage,
     SQLiteStorage,
     RedisStorage,
@@ -14,8 +14,8 @@ from bayes_brain.storage import (
     AsyncSQLiteStorage,
     AsyncRedisStorage,
 )
-from bayes_brain.embeddings import LocalSentenceTransformerEmbedder
-from bayes_brain.router import BayesianRouter, AsyncBayesianRouter
+from bayesian_cortex.embeddings import LocalSentenceTransformerEmbedder
+from bayesian_cortex.router import BayesianRouter, AsyncBayesianRouter
 
 
 def test_in_memory_storage_batch():

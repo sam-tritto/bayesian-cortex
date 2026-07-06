@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
-from bayes_brain.embeddings import (
+from bayesian_cortex.embeddings import (
     AsyncContextEmbedder,
     AsyncVectorContextStore,
     AsyncVectorStoreProtocol,
@@ -19,7 +19,7 @@ from bayes_brain.embeddings import (
     VectorContextStore,
     VectorStoreProtocol,
 )
-from bayes_brain.storage import (
+from bayesian_cortex.storage import (
     AsyncBaseStorage,
     AsyncInMemoryStorage,
     BaseStorage,
@@ -86,10 +86,10 @@ class BayesianRouter:
                 raise ValueError("Cannot specify both 'storage' and 'storage_backend'")
             storage_kwargs = storage_kwargs or {}
             if storage_backend == "sqlite":
-                from bayes_brain.storage import SQLiteStorage
-                storage = SQLiteStorage(db_path=storage_path or "bayes_brain.db", **storage_kwargs)
+                from bayesian_cortex.storage import SQLiteStorage
+                storage = SQLiteStorage(db_path=storage_path or "bayesian_cortex.db", **storage_kwargs)
             elif storage_backend == "redis":
-                from bayes_brain.storage import RedisStorage
+                from bayesian_cortex.storage import RedisStorage
                 if isinstance(storage_path, str) or storage_path is None:
                     import redis
                     client = redis.from_url(storage_path or "redis://localhost:6379")
@@ -127,7 +127,7 @@ class BayesianRouter:
             else:
                 self.secret_key = secret_key
         else:
-            env_key = os.environ.get("BAYES_BRAIN_SECRET_KEY")
+            env_key = os.environ.get("BAYESIAN_CORTEX_SECRET_KEY")
             if env_key:
                 self.secret_key = env_key.encode("utf-8")
             else:
@@ -1455,10 +1455,10 @@ class AsyncBayesianRouter:
                 raise ValueError("Cannot specify both 'storage' and 'storage_backend'")
             storage_kwargs = storage_kwargs or {}
             if storage_backend == "sqlite":
-                from bayes_brain.storage import AsyncSQLiteStorage
-                storage = AsyncSQLiteStorage(db_path=storage_path or "bayes_brain.db", **storage_kwargs)
+                from bayesian_cortex.storage import AsyncSQLiteStorage
+                storage = AsyncSQLiteStorage(db_path=storage_path or "bayesian_cortex.db", **storage_kwargs)
             elif storage_backend == "redis":
-                from bayes_brain.storage import AsyncRedisStorage
+                from bayesian_cortex.storage import AsyncRedisStorage
                 if isinstance(storage_path, str) or storage_path is None:
                     import redis.asyncio as aioredis
                     client = aioredis.from_url(storage_path or "redis://localhost:6379")
@@ -1496,7 +1496,7 @@ class AsyncBayesianRouter:
             else:
                 self.secret_key = secret_key
         else:
-            env_key = os.environ.get("BAYES_BRAIN_SECRET_KEY")
+            env_key = os.environ.get("BAYESIAN_CORTEX_SECRET_KEY")
             if env_key:
                 self.secret_key = env_key.encode("utf-8")
             else:

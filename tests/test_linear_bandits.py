@@ -3,9 +3,9 @@ import numpy as np
 import pytest
 from typing import Sequence
 
-from bayes_brain.embeddings import VectorContextStore, AsyncVectorContextStore
-from bayes_brain.router import BayesianRouter, AsyncBayesianRouter
-from bayes_brain.storage import InMemoryStorage, SQLiteStorage, AsyncInMemoryStorage, AsyncSQLiteStorage
+from bayesian_cortex.embeddings import VectorContextStore, AsyncVectorContextStore
+from bayesian_cortex.router import BayesianRouter, AsyncBayesianRouter
+from bayesian_cortex.storage import InMemoryStorage, SQLiteStorage, AsyncInMemoryStorage, AsyncSQLiteStorage
 
 
 class SimpleMockEmbedder:

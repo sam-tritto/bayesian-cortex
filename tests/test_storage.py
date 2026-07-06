@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from bayes_brain.storage import InMemoryStorage, RedisStorage, SQLiteStorage
+from bayesian_cortex.storage import InMemoryStorage, RedisStorage, SQLiteStorage
 
 
 def test_in_memory_storage():
@@ -91,14 +91,14 @@ def test_redis_storage():
     
     # HGET setup
     mock_client.hget.side_effect = lambda key, field: {
-        "bayes_brain:ctx_1:tool_1:alpha": b"10.0",
-        "bayes_brain:ctx_1:tool_1:beta": b"5.0"
+        "bayesian_cortex:ctx_1:tool_1:alpha": b"10.0",
+        "bayesian_cortex:ctx_1:tool_1:beta": b"5.0"
     }.get(f"{key}:{field}", None)
 
     # GET setup for metadata
     mock_client.get.return_value = b"meta_value"
 
-    storage = RedisStorage(mock_client, prefix="bayes_brain:")
+    storage = RedisStorage(mock_client, prefix="bayesian_cortex:")
 
     # Get params
     a, b = storage.get_candidate_params("ctx_1", "tool_1")
@@ -108,7 +108,7 @@ def test_redis_storage():
     # Update params
     storage.update_candidate_params("ctx_1", "tool_1", 12.0, 6.0)
     mock_client.hset.assert_called_with(
-        "bayes_brain:ctx_1",
+        "bayesian_cortex:ctx_1",
         mapping={"tool_1:alpha": "12.0", "tool_1:beta": "6.0"}
     )
 
@@ -117,16 +117,16 @@ def test_redis_storage():
     assert new_a == 1.5
     assert new_b == 2.5
     mock_script.assert_called_with(
-        keys=["bayes_brain:ctx_1"],
+        keys=["bayesian_cortex:ctx_1"],
         args=["tool_1:alpha", "tool_1:beta", "0.9", "1.0"]
     )
 
     # Metadata
     assert storage.load_metadata("some_key") == "meta_value"
-    mock_client.get.assert_called_with("bayes_brain:metadata:some_key")
+    mock_client.get.assert_called_with("bayesian_cortex:metadata:some_key")
     
     storage.save_metadata("some_key", "new_val")
-    mock_client.set.assert_called_with("bayes_brain:metadata:some_key", "new_val")
+    mock_client.set.assert_called_with("bayesian_cortex:metadata:some_key", "new_val")
 
 
 def test_sqlite_storage_incremental_and_migration():
@@ -187,10 +187,10 @@ def test_redis_storage_incremental_and_migration():
     # Setup legacy metadata return when requested
     legacy_data = {"ctx_legacy_1": [0.5, 0.5]}
     mock_client.get.side_effect = lambda key: {
-        "bayes_brain:metadata:vector_context_store": json.dumps(legacy_data).encode("utf-8")
+        "bayesian_cortex:metadata:vector_context_store": json.dumps(legacy_data).encode("utf-8")
     }.get(key, None)
 
-    storage = RedisStorage(mock_client, prefix="bayes_brain:")
+    storage = RedisStorage(mock_client, prefix="bayesian_cortex:")
 
     # 1. Trigger load_all_vectors, which should fallback and migrate
     vectors = storage.load_all_vectors()
@@ -198,14 +198,14 @@ def test_redis_storage_incremental_and_migration():
     
     # Verify migration writes to the context_vectors hash
     mock_client.hset.assert_any_call(
-        "bayes_brain:context_vectors",
+        "bayesian_cortex:context_vectors",
         mapping={"ctx_legacy_1": json.dumps([0.5, 0.5])}
     )
 
     # 2. Test saving vector incrementally
     storage.save_vector("ctx_new", [0.9, 0.1])
     mock_client.hset.assert_called_with(
-        "bayes_brain:context_vectors",
+        "bayesian_cortex:context_vectors",
         key="ctx_new",
         value=json.dumps([0.9, 0.1])
     )

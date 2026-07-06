@@ -10,7 +10,7 @@ import numpy as np
 
 
 class BaseStorage(abc.ABC):
-    """Abstract base class defining the storage backend interface for BayesBrain."""
+    """Abstract base class defining the storage backend interface for BayesianCortex."""
 
     @abc.abstractmethod
     def get_candidate_params(self, context_key: str, candidate_name: str) -> Tuple[float, float]:
@@ -396,7 +396,7 @@ class SQLiteStorage(BaseStorage):
     Guarantees atomic updates by utilizing BEGIN IMMEDIATE transactions.
     """
 
-    def __init__(self, db_path: str = "bayes_brain.db") -> None:
+    def __init__(self, db_path: str = "bayesian_cortex.db") -> None:
         self.db_path = db_path
         # Initialize the database tables if they do not exist
         conn = self._connect()
@@ -947,7 +947,7 @@ class RedisStorage(BaseStorage):
     return {tostring(new_alpha), tostring(new_beta)}
     """
 
-    def __init__(self, redis_client: Any, prefix: str = "bayes_brain:") -> None:
+    def __init__(self, redis_client: Any, prefix: str = "bayesian_cortex:") -> None:
         """
         Initialize with a pre-configured redis-py Client.
         """
@@ -1294,7 +1294,7 @@ class RedisStorage(BaseStorage):
 
 
 class AsyncBaseStorage(abc.ABC):
-    """Abstract base class defining the async storage backend interface for BayesBrain."""
+    """Abstract base class defining the async storage backend interface for BayesianCortex."""
 
     @abc.abstractmethod
     async def get_candidate_params(self, context_key: str, candidate_name: str) -> Tuple[float, float]:
@@ -1743,7 +1743,7 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
     to handle high concurrency workloads across different threads, tasks, and processes.
     """
 
-    def __init__(self, db_path: str = "bayes_brain.db", max_connections: int = 10, timeout: float = 5.0) -> None:
+    def __init__(self, db_path: str = "bayesian_cortex.db", max_connections: int = 10, timeout: float = 5.0) -> None:
         self.db_path = db_path
         self.max_connections = max_connections
         self.timeout = timeout
@@ -2371,7 +2371,7 @@ class AsyncRedisStorage(AsyncBaseStorage):
     return {tostring(new_alpha), tostring(new_beta)}
     """
 
-    def __init__(self, redis_client: Any, prefix: str = "bayes_brain:") -> None:
+    def __init__(self, redis_client: Any, prefix: str = "bayesian_cortex:") -> None:
         self.client = redis_client
         self.prefix = prefix
         self._script = self.client.register_script(self.LUA_DECAY_UPDATE)
