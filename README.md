@@ -1,5 +1,11 @@
 <p align="center">
   <img src="assets/logo.png?v=2" alt="BayesianCortex Logo" width="400">
+  <br>
+  <br>
+  <a href="https://pypi.org/project/bayesian-cortex/"><img src="https://img.shields.io/pypi/v/bayesian-cortex.svg" alt="PyPI version"></a>
+  <a href="https://docs.astral.sh/uv/"><img src="https://img.shields.io/badge/uv-%23DE5FE9.svg?style=flat&logo=uv&logoColor=white" alt="uv"></a>
+  <a href="https://github.com/sam-tritto/bayesian-cortex"><img src="https://img.shields.io/badge/coverage-61%25-yellow.svg" alt="Coverage Status"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
 </p>
 
 # BayesianCortex: Dynamic Agent Routing via Contextual Bayesian Bandits
