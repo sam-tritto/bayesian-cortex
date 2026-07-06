@@ -151,7 +151,7 @@ class SQLiteStorage(BaseStorage):
     def __init__(self, db_path: str = "bayes_brain.db") -> None:
         self.db_path = db_path
         # Initialize the database tables if they do not exist
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             with conn:
                 conn.execute(
@@ -186,9 +186,15 @@ class SQLiteStorage(BaseStorage):
         
         self._local = threading.local()
 
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=5000;")
+        return conn
+
     def _get_conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, "conn"):
-            self._local.conn = sqlite3.connect(self.db_path)
+            self._local.conn = self._connect()
         return self._local.conn
 
     def get_tool_params(self, context_key: str, tool_name: str) -> Tuple[float, float]:

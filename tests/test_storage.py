@@ -195,3 +195,29 @@ def test_redis_storage_incremental_and_migration():
         key="ctx_new",
         value=json.dumps([0.9, 0.1])
     )
+
+
+def test_sqlite_storage_wal_and_timeout():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        db_path = tmp.name
+    
+    try:
+        storage = SQLiteStorage(db_path)
+        conn = storage._get_conn()
+        
+        # Check journal mode is WAL
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA journal_mode;")
+        journal_mode = cursor.fetchone()[0]
+        assert journal_mode.lower() == "wal"
+        
+        # Check busy_timeout is 5000 (ms)
+        cursor.execute("PRAGMA busy_timeout;")
+        busy_timeout = cursor.fetchone()[0]
+        assert busy_timeout == 5000
+        
+        storage.close()
+    finally:
+        if os.path.exists(db_path):
+            os.remove(db_path)
+
