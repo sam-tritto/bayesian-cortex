@@ -1,5 +1,7 @@
 import base64
+import hashlib
 import json
+import logging
 import uuid
 from typing import Dict, List, Optional, Tuple
 
@@ -7,6 +9,8 @@ import numpy as np
 
 from bayes_brain.embeddings import ContextEmbedder, VectorContextStore, VectorStoreProtocol
 from bayes_brain.storage import BaseStorage, InMemoryStorage
+
+logger = logging.getLogger(__name__)
 
 
 class BayesianToolRouter:
@@ -37,6 +41,12 @@ class BayesianToolRouter:
         """
         self.storage = storage or InMemoryStorage()
         self.embedder = embedder
+        
+        if embedder is None:
+            logger.warning(
+                "No ContextEmbedder provided. Operating in exact-match fallback mode. "
+                "For contextual tasks with semantic variation, providing an embedder is highly recommended."
+            )
         
         if not (0.0 < decay_factor <= 1.0):
             raise ValueError("decay_factor must be in the range (0, 1]")
@@ -74,6 +84,15 @@ class BayesianToolRouter:
         except Exception:
             pass
 
+    def _hash_context_text(self, context_text: str) -> str:
+        """
+        Normalize the context string (strip and collapse multiple whitespaces)
+        and hash it using SHA-256 to ensure short, fixed-length keys.
+        """
+        normalized = " ".join(context_text.strip().split())
+        sha256_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        return f"hash_{sha256_hash}"
+
     def _resolve_context_key(self, context_text: str) -> str:
         """
         Resolve the given raw context string into a normalized context key.
@@ -81,13 +100,16 @@ class BayesianToolRouter:
         otherwise, does a direct, exact string lookup.
         """
         if not self.embedder:
-            return context_text
+            return self._hash_context_text(context_text)
 
         try:
             vector = self.embedder.embed_query(context_text)
         except Exception:
             # Fall back to exact string context key if embedding extraction fails
-            return context_text
+            logger.warning(
+                "Failed to generate embedding for context. Falling back to exact-match hashing."
+            )
+            return self._hash_context_text(context_text)
 
         # Find nearest vector context in index
         matched_key = self._context_store.get_nearest_context(

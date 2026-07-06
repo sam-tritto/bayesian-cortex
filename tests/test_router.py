@@ -43,14 +43,15 @@ def test_router_without_embeddings():
 
     # Provide feedback
     router.feedback("web_search_query", "search_api", success=True)
-    a_success, b_success = storage.get_tool_params("web_search_query", "search_api")
+    key = router._resolve_context_key("web_search_query")
+    a_success, b_success = storage.get_tool_params(key, "search_api")
     # Initial was (1, 1). Decayed: alpha = 1 * 0.95 + 1.0 = 1.95, beta = 1 * 0.95 + 0.0 = 0.95
     assert a_success == pytest.approx(1.95)
     assert b_success == pytest.approx(0.95)
 
     # Provide failure feedback
     router.feedback("web_search_query", "search_api", success=False)
-    a_fail, b_fail = storage.get_tool_params("web_search_query", "search_api")
+    a_fail, b_fail = storage.get_tool_params(key, "search_api")
     # Decayed: alpha = 1.95 * 0.95 + 0 = 1.8525, beta = 0.95 * 0.95 + 1.0 = 1.9025
     assert a_fail == pytest.approx(1.8525)
     assert b_fail == pytest.approx(1.9025)
@@ -91,7 +92,8 @@ def test_router_trace_feedback():
     # Feedback using trace ID
     router.feedback_by_trace(trace_id, success=True)
     
-    alpha, beta = storage.get_tool_params("context_a", "tool_x")
+    key = router._resolve_context_key("context_a")
+    alpha, beta = storage.get_tool_params(key, "tool_x")
     # (1*1 + 1) = 2.0, (1*1 + 0) = 1.0
     assert alpha == 2.0
     assert beta == 1.0
@@ -110,7 +112,8 @@ def test_router_priors_seeding():
     assert chosen == "highly_reliable"
 
     # Verify storage contains the seeded priors
-    a_rel, b_rel = storage.get_tool_params("some_task", "highly_reliable")
+    key = router._resolve_context_key("some_task")
+    a_rel, b_rel = storage.get_tool_params(key, "highly_reliable")
     assert a_rel == 90.0
     assert b_rel == 10.0
 
@@ -151,3 +154,51 @@ def test_router_with_custom_vector_store():
     # Verify custom_store has the new context key stored
     assert context_key in custom_store.vectors
     assert custom_store.get_nearest_context([1.0, 0.0]) == context_key
+
+
+def test_router_exact_match_hashing_and_normalization():
+    storage = InMemoryStorage()
+    router = BayesianToolRouter(storage=storage)
+
+    # Clean query
+    key1 = router._resolve_context_key("my context query")
+    # Prefix check
+    assert key1.startswith("hash_")
+    # Length check: 5 for "hash_" + 64 for sha256 hex digest = 69
+    assert len(key1) == 69
+
+    # Whitespace normalization check
+    key2 = router._resolve_context_key("  my context query  ")
+    key3 = router._resolve_context_key("my \t context \n query")
+    assert key1 == key2
+    assert key1 == key3
+
+    # Different content produces different hash
+    key_other = router._resolve_context_key("different context query")
+    assert key1 != key_other
+
+
+def test_router_embedder_failure_fallback_hashing(caplog):
+    class CrashingEmbedder:
+        def embed_query(self, text: str):
+            raise ValueError("Embedding engine offline")
+
+    storage = InMemoryStorage()
+    router = BayesianToolRouter(storage=storage, embedder=CrashingEmbedder())
+
+    with caplog.at_level("WARNING"):
+        key = router._resolve_context_key("test warning logs")
+    
+    assert key.startswith("hash_")
+    # Assert warning was logged
+    warnings = [rec.message for rec in caplog.records if rec.levelname == "WARNING"]
+    assert any("Failed to generate embedding for context" in w for w in warnings)
+
+
+def test_router_no_embedder_warning(caplog):
+    storage = InMemoryStorage()
+    with caplog.at_level("WARNING"):
+        BayesianToolRouter(storage=storage)
+    
+    warnings = [rec.message for rec in caplog.records if rec.levelname == "WARNING"]
+    assert any("No ContextEmbedder provided" in w for w in warnings)
