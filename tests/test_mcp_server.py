@@ -79,6 +79,11 @@ async def test_mcp_server_administrative_features():
         assert "Total Context Clusters" in metrics_text
         assert "tool1" in metrics_text
         assert "tool2" in metrics_text
+        # Assert new visual/diagnostic features are present
+        assert "<svg" in metrics_text
+        assert "Belief Sparkline" in metrics_text
+        assert "Selection Frequencies & Success Rates" in metrics_text
+        assert "Chronological Execution Log" in metrics_text
 
         # 5. Reset beliefs for the updated tool
         res_reset, _ = await mcp.call_tool("reset_beliefs", {"context": "pytest styling", "tool": updated_tool})

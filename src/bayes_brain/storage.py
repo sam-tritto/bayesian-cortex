@@ -235,8 +235,15 @@ class InMemoryStorage(BaseStorage):
     def load_all_vectors(self) -> Dict[str, List[float]]:
         with self._lock:
             if not self._vectors:
-                return super().load_all_vectors()
-            return {k: list(v) for k, v in self._vectors.items()}
+                # Backwards compatibility migration check
+                serialized = self._metadata.get("vector_context_store")
+                if serialized:
+                    try:
+                        data = json.loads(serialized)
+                        self._vectors = {k: list(v) for k, v in data.items()}
+                    except Exception:
+                        pass
+            return dict(self._vectors)
 
     def save_vector(self, context_key: str, vector: Sequence[float]) -> None:
         with self._lock:

@@ -235,3 +235,42 @@ def test_sqlite_storage_wal_and_timeout():
         if os.path.exists(db_path):
             os.remove(db_path)
 
+
+def test_storage_selection_logging():
+    # Test InMemoryStorage logging
+    mem_store = InMemoryStorage()
+    mem_store.log_selection("trace_mem_1", "ctx_mem", "tool_a")
+    logs = mem_store.get_selection_logs()
+    assert len(logs) == 1
+    assert logs[0]["trace_id"] == "trace_mem_1"
+    assert logs[0]["context_key"] == "ctx_mem"
+    assert logs[0]["tool_name"] == "tool_a"
+    assert logs[0]["reward"] is None
+
+    mem_store.log_feedback("trace_mem_1", 1.0)
+    logs_updated = mem_store.get_selection_logs()
+    assert logs_updated[0]["reward"] == 1.0
+
+    # Test SQLiteStorage logging
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        db_path = tmp.name
+    try:
+        sql_store = SQLiteStorage(db_path)
+        sql_store.log_selection("trace_sql_1", "ctx_sql", "tool_b")
+        logs = sql_store.get_selection_logs()
+        assert len(logs) == 1
+        assert logs[0]["trace_id"] == "trace_sql_1"
+        assert logs[0]["context_key"] == "ctx_sql"
+        assert logs[0]["tool_name"] == "tool_b"
+        assert logs[0]["reward"] is None
+
+        sql_store.log_feedback("trace_sql_1", 0.0)
+        logs_updated = sql_store.get_selection_logs()
+        assert logs_updated[0]["reward"] == 0.0
+        
+        sql_store.close()
+    finally:
+        if os.path.exists(db_path):
+            os.remove(db_path)
+
+

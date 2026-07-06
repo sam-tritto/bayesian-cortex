@@ -2,6 +2,9 @@ import json
 import os
 import sqlite3
 from typing import Callable, List, Optional, Tuple, Union
+from datetime import datetime, timezone
+import numpy as np
+from scipy.stats import beta as scipy_beta
 
 from mcp.server.fastmcp import FastMCP
 
@@ -112,6 +115,261 @@ async def _get_all_beliefs(router: Union[BayesianToolRouter, AsyncBayesianToolRo
             pass
 
     return beliefs
+
+
+def _get_tool_color(tool_name: str, index: int = 0) -> str:
+    colors = {
+        "local_pytest": "#3b82f6",    # Blue
+        "docker_sandbox": "#8b5cf6",  # Purple
+        "fallback_api": "#f97316",    # Orange
+        "tool1": "#10b981",           # Emerald Green
+        "tool2": "#ec4899",           # Pink
+    }
+    if tool_name in colors:
+        return colors[tool_name]
+    default_colors = ["#10b981", "#ec4899", "#f59e0b", "#06b6d4", "#f43f5e", "#14b8a6"]
+    return default_colors[index % len(default_colors)]
+
+
+def generate_ascii_sparkline(alpha: float, beta: float, width: int = 15) -> str:
+    """
+    Generate an ASCII-based sparkline representing the shape of the Beta distribution.
+    """
+    try:
+        blocks = [" ", " ", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+        x = np.linspace(0.02, 0.98, width)
+        y = scipy_beta.pdf(x, alpha, beta)
+        y = np.nan_to_num(y, nan=0.0, posinf=100.0, neginf=0.0)
+        max_y = np.max(y)
+        if max_y <= 0:
+            return " " * width
+        sparkline = []
+        for val in y:
+            idx = int(round((val / max_y) * (len(blocks) - 1)))
+            idx = max(0, min(len(blocks) - 1, idx))
+            sparkline.append(blocks[idx])
+        return "".join(sparkline)
+    except Exception:
+        return " " * width
+
+
+def generate_beta_pdf_svg(tools_params: dict, width: int = 600, height: int = 250) -> str:
+    """
+    Generate SVG plotting the Beta density curves for candidate tools.
+    """
+    try:
+        x_vals = np.linspace(0.0, 1.0, 101)
+        curves = {}
+        max_y = 1.0
+        
+        for idx, (tool_name, params) in enumerate(tools_params.items()):
+            alpha = params.get("alpha", 1.0)
+            beta = params.get("beta", 1.0)
+            y_vals = scipy_beta.pdf(x_vals, alpha, beta)
+            y_vals = np.nan_to_num(y_vals, nan=0.0, posinf=100.0, neginf=0.0)
+            curves[tool_name] = y_vals
+            max_y = max(max_y, np.max(y_vals))
+
+        padding_top = 20
+        padding_bottom = 40
+        padding_left = 50
+        padding_right = 160
+        
+        chart_width = width - padding_left - padding_right
+        chart_height = height - padding_top - padding_bottom
+
+        svg_elements = [
+            f'<svg viewBox="0 0 {width} {height}" width="100%" height="{height}" xmlns="http://www.w3.org/2000/svg" style="background-color: #111827; border-radius: 8px; font-family: ui-sans-serif, system-ui, sans-serif;">',
+            f'<rect width="{width}" height="{height}" fill="#111827" rx="8" />'
+        ]
+        
+        # Horizontal grids
+        for i in range(5):
+            y_frac = i / 4
+            y_pos = padding_top + chart_height * y_frac
+            y_val = max_y * (1 - y_frac)
+            svg_elements.append(
+                f'<line x1="{padding_left}" y1="{y_pos}" x2="{padding_left + chart_width}" y2="{y_pos}" stroke="#374151" stroke-dasharray="4" stroke-width="1" />'
+            )
+            svg_elements.append(
+                f'<text x="{padding_left - 8}" y="{y_pos + 4}" fill="#9ca3af" font-size="10" text-anchor="end">{y_val:.2f}</text>'
+            )
+
+        # Vertical grids
+        for i in range(5):
+            x_frac = i / 4
+            x_pos = padding_left + chart_width * x_frac
+            svg_elements.append(
+                f'<line x1="{x_pos}" y1="{padding_top}" x2="{x_pos}" y2="{padding_top + chart_height}" stroke="#374151" stroke-dasharray="4" stroke-width="1" />'
+            )
+            svg_elements.append(
+                f'<text x="{x_pos}" y="{padding_top + chart_height + 16}" fill="#9ca3af" font-size="10" text-anchor="middle">{x_frac:.2f}</text>'
+            )
+
+        svg_elements.append(
+            f'<text x="{padding_left + chart_width / 2}" y="{height - 8}" fill="#9ca3af" font-size="11" font-weight="500" text-anchor="middle">Success Probability (x)</text>'
+        )
+
+        # Plot curves
+        for idx, (tool_name, y_vals) in enumerate(curves.items()):
+            tool_color = _get_tool_color(tool_name, idx)
+            points = []
+            for x, y in zip(x_vals, y_vals):
+                px = padding_left + x * chart_width
+                py = padding_top + chart_height - (y / max_y) * chart_height
+                points.append(f"{px:.1f},{py:.1f}")
+                
+            path_d = "M " + " L ".join(points)
+            svg_elements.append(
+                f'<path d="{path_d}" fill="none" stroke="{tool_color}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />'
+            )
+
+        # Legend
+        legend_left = padding_left + chart_width + 16
+        for idx, (tool_name, params) in enumerate(tools_params.items()):
+            tool_color = _get_tool_color(tool_name, idx)
+            alpha = params.get("alpha", 1.0)
+            beta = params.get("beta", 1.0)
+            mean = alpha / (alpha + beta) if (alpha + beta) > 0 else 0.5
+            y_pos = padding_top + 16 + idx * 28
+            
+            svg_elements.append(
+                f'<rect x="{legend_left}" y="{y_pos}" width="12" height="12" rx="3" fill="{tool_color}" />'
+            )
+            svg_elements.append(
+                f'<text x="{legend_left + 18}" y="{y_pos + 10}" fill="#e5e7eb" font-size="11" font-weight="bold">{tool_name}</text>'
+            )
+            svg_elements.append(
+                f'<text x="{legend_left + 18}" y="{y_pos + 22}" fill="#9ca3af" font-size="9">Beta({alpha:.1f}, {beta:.1f}) | μ={mean*100:.1f}%</text>'
+            )
+            
+        svg_elements.append("</svg>")
+        return "\n".join(svg_elements)
+    except Exception as e:
+        return f'<svg viewBox="0 0 {width} {height}" width="100%" height="{height}" xmlns="http://www.w3.org/2000/svg" style="background-color: #111827;"><text x="{width/2}" y="{height/2}" fill="#ef4444" text-anchor="middle">Error rendering SVG: {str(e)}</text></svg>'
+
+
+def generate_history_svg(logs: list, available_tools: list, width: int = 600, height: int = 250) -> str:
+    """
+    Generate SVG plotting the moving average success rate over time.
+    """
+    try:
+        tool_rewards = {t: [] for t in available_tools}
+        history_points = []
+        
+        for idx, log in enumerate(logs):
+            t_name = log["tool_name"]
+            reward = log["reward"]
+            if t_name in tool_rewards:
+                if reward is not None:
+                    tool_rewards[t_name].append(reward)
+                point_avgs = {}
+                for t in available_tools:
+                    rewards = tool_rewards[t]
+                    if len(rewards) > 0:
+                        window = rewards[-10:]
+                        point_avgs[t] = sum(window) / len(window)
+                    else:
+                        point_avgs[t] = None
+                history_points.append(point_avgs)
+
+        has_points = any(any(val is not None for val in pt.values()) for pt in history_points)
+        
+        svg_elements = [
+            f'<svg viewBox="0 0 {width} {height}" width="100%" height="{height}" xmlns="http://www.w3.org/2000/svg" style="background-color: #111827; border-radius: 8px; font-family: ui-sans-serif, system-ui, sans-serif;">',
+            f'<rect width="{width}" height="{height}" fill="#111827" rx="8" />'
+        ]
+        
+        padding_top = 20
+        padding_bottom = 40
+        padding_left = 50
+        padding_right = 160
+        
+        chart_width = width - padding_left - padding_right
+        chart_height = height - padding_top - padding_bottom
+
+        if not has_points or len(logs) < 2:
+            svg_elements.append(
+                f'<text x="{width / 2}" y="{height / 2}" fill="#9ca3af" font-size="12" text-anchor="middle">Insufficient feedback data to plot success rates over time.</text>'
+            )
+            svg_elements.append("</svg>")
+            return "\n".join(svg_elements)
+
+        # Horizontal grids
+        for i in range(5):
+            y_frac = i / 4
+            y_pos = padding_top + chart_height * y_frac
+            y_val = 100 * (1 - y_frac)
+            svg_elements.append(
+                f'<line x1="{padding_left}" y1="{y_pos}" x2="{padding_left + chart_width}" y2="{y_pos}" stroke="#374151" stroke-dasharray="4" stroke-width="1" />'
+            )
+            svg_elements.append(
+                f'<text x="{padding_left - 8}" y="{y_pos + 4}" fill="#9ca3af" font-size="10" text-anchor="end">{y_val:.0f}%</text>'
+            )
+
+        # Vertical grids
+        num_runs = len(history_points)
+        x_steps = min(5, num_runs)
+        for i in range(x_steps):
+            x_frac = i / (x_steps - 1) if x_steps > 1 else 0.0
+            x_pos = padding_left + chart_width * x_frac
+            run_num = int(round(x_frac * (num_runs - 1))) + 1
+            svg_elements.append(
+                f'<line x1="{x_pos}" y1="{padding_top}" x2="{x_pos}" y2="{padding_top + chart_height}" stroke="#374151" stroke-dasharray="4" stroke-width="1" />'
+            )
+            svg_elements.append(
+                f'<text x="{x_pos}" y="{padding_top + chart_height + 16}" fill="#9ca3af" font-size="10" text-anchor="middle">#{run_num}</text>'
+            )
+
+        svg_elements.append(
+            f'<text x="{padding_left + chart_width / 2}" y="{height - 8}" fill="#9ca3af" font-size="11" font-weight="500" text-anchor="middle">Execution Sequence (Timeline)</text>'
+        )
+
+        # Plot lines
+        for idx, tool_name in enumerate(available_tools):
+            tool_color = _get_tool_color(tool_name, idx)
+            points = []
+            for run_idx, pt in enumerate(history_points):
+                val = pt.get(tool_name)
+                if val is not None:
+                    x_pos = padding_left + (run_idx / (num_runs - 1)) * chart_width
+                    y_pos = padding_top + chart_height - val * chart_height
+                    points.append(f"{x_pos:.1f},{y_pos:.1f}")
+                    
+            if len(points) >= 2:
+                path_d = "M " + " L ".join(points)
+                svg_elements.append(
+                    f'<path d="{path_d}" fill="none" stroke="{tool_color}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />'
+                )
+                for pt_str in points:
+                    cx, cy = pt_str.split(",")
+                    svg_elements.append(
+                        f'<circle cx="{cx}" cy="{cy}" r="3.5" fill="#ffffff" stroke="{tool_color}" stroke-width="1.5" />'
+                    )
+
+        # Legend
+        legend_left = padding_left + chart_width + 16
+        for idx, tool_name in enumerate(available_tools):
+            tool_color = _get_tool_color(tool_name, idx)
+            rewards = tool_rewards[tool_name]
+            total_selections = len(rewards)
+            current_avg = sum(rewards[-10:]) / len(rewards[-10:]) if len(rewards[-10:]) > 0 else 0.0
+            y_pos = padding_top + 16 + idx * 28
+            
+            svg_elements.append(
+                f'<rect x="{legend_left}" y="{y_pos}" width="12" height="12" rx="3" fill="{tool_color}" />'
+            )
+            svg_elements.append(
+                f'<text x="{legend_left + 18}" y="{y_pos + 10}" fill="#e5e7eb" font-size="11" font-weight="bold">{tool_name}</text>'
+            )
+            svg_elements.append(
+                f'<text x="{legend_left + 18}" y="{y_pos + 22}" fill="#9ca3af" font-size="9">MA(10): {current_avg*100:.1f}% | Total: {total_selections}</text>'
+            )
+            
+        svg_elements.append("</svg>")
+        return "\n".join(svg_elements)
+    except Exception as e:
+        return f'<svg viewBox="0 0 {width} {height}" width="100%" height="{height}" xmlns="http://www.w3.org/2000/svg" style="background-color: #111827;"><text x="{width/2}" y="{height/2}" fill="#ef4444" text-anchor="middle">Error rendering SVG: {str(e)}</text></svg>'
 
 
 def create_mcp_server(
@@ -259,14 +517,19 @@ def create_mcp_server(
         Expose a JSON/Markdown dashboard of current statistics and beliefs.
         """
         all_beliefs = await _get_all_beliefs(router)
+        logs = await router.storage.get_selection_logs()
 
         lines = [
             "# Bayes Brain Multi-Armed Bandit Metrics",
             "",
         ]
 
+        # 1. Posterior Belief Distributions
+        lines.append("## Posterior Belief Distributions")
+        lines.append("")
         if not all_beliefs:
-            lines.append("No active beliefs recorded in storage yet.")
+            lines.append("*No active beliefs recorded in storage yet.*")
+            lines.append("")
         else:
             lines.append(f"**Total Context Clusters:** {len(all_beliefs)}")
             lines.append("")
@@ -284,17 +547,100 @@ def create_mcp_server(
             for ctx_key, tools_beliefs in full_beliefs.items():
                 lines.append(f"### Context Cluster: `{ctx_key}`")
                 lines.append("")
-                lines.append("| Tool | Alpha (Successes) | Beta (Failures) | Expected Success Rate |")
-                lines.append("| :--- | :---: | :---: | :---: |")
+                lines.append("| Tool | Alpha (Successes) | Beta (Failures) | Expected Success Rate | Belief Sparkline (0 to 1) |")
+                lines.append("| :--- | :---: | :---: | :---: | :---: |")
 
                 for t_name, params in tools_beliefs.items():
                     alpha = params.get("alpha", 1.0)
                     beta = params.get("beta", 1.0)
                     total = alpha + beta
                     expected_rate = (alpha / total) * 100 if total > 0 else 50.0
-                    lines.append(f"| {t_name} | {alpha:.2f} | {beta:.2f} | {expected_rate:.1f}% |")
+                    sparkline = generate_ascii_sparkline(alpha, beta)
+                    lines.append(f"| {t_name} | {alpha:.2f} | {beta:.2f} | {expected_rate:.1f}% | `{sparkline}` |")
+                lines.append("")
+                
+                # Render SVG Beta density curve
+                lines.append("#### Probability Density Curves")
+                lines.append('<div align="center">')
+                lines.append(generate_beta_pdf_svg(tools_beliefs))
+                lines.append("</div>")
                 lines.append("")
 
+        # 2. Historical performance statistics
+        lines.append("## Selection Frequencies & Success Rates")
+        lines.append("")
+        total_selections = len(logs)
+        lines.append(f"**Total Decisions Logged:** {total_selections}")
+        lines.append("")
+
+        # Aggregate counts and success rates
+        select_counts = {t: 0 for t in available_tools}
+        feedback_counts = {t: 0 for t in available_tools}
+        rewards = {t: [] for t in available_tools}
+        
+        for log in logs:
+            t_name = log["tool_name"]
+            reward = log["reward"]
+            if t_name in select_counts:
+                select_counts[t_name] += 1
+            if reward is not None:
+                if t_name in feedback_counts:
+                    feedback_counts[t_name] += 1
+                if t_name in rewards:
+                    rewards[t_name].append(reward)
+
+        lines.append("| Tool | Total Selections | Selection Frequency | Runs with Feedback | Overall Success Rate | Recent Success Rate (MA10) |")
+        lines.append("| :--- | :---: | :---: | :---: | :---: | :---: |")
+        for idx, t_name in enumerate(available_tools):
+            sel_cnt = select_counts[t_name]
+            sel_freq = (sel_cnt / total_selections * 100) if total_selections > 0 else 0.0
+            fb_cnt = feedback_counts[t_name]
+            r_list = rewards[t_name]
+            overall_rate = (sum(r_list) / len(r_list) * 100) if len(r_list) > 0 else 0.0
+            ma_list = r_list[-10:]
+            recent_rate = (sum(ma_list) / len(ma_list) * 100) if len(ma_list) > 0 else 0.0
+            
+            recent_rate_str = f"{recent_rate:.1f}%" if len(ma_list) > 0 else "N/A"
+            overall_rate_str = f"{overall_rate:.1f}%" if len(r_list) > 0 else "N/A"
+            lines.append(f"| {t_name} | {sel_cnt} | {sel_freq:.1f}% | {fb_cnt} | {overall_rate_str} | {recent_rate_str} |")
+        lines.append("")
+
+        lines.append("### Moving Average Success Rate Over Time")
+        lines.append('<div align="center">')
+        lines.append(generate_history_svg(logs, available_tools))
+        lines.append("</div>")
+        lines.append("")
+
+        # 3. Recent actions log
+        lines.append("## Chronological Execution Log (Recent)")
+        lines.append("")
+        recent_logs = logs[-20:] if total_selections > 20 else logs
+        if not recent_logs:
+            lines.append("*No routing actions logged yet.*")
+            lines.append("")
+        else:
+            lines.append("| Trace ID | Timestamp (UTC) | Context Key | Selected Tool | Feedback Reward / Outcome |")
+            lines.append("| :--- | :--- | :--- | :--- | :--- |")
+            for log in reversed(recent_logs):
+                tid = log["trace_id"]
+                tid_display = tid[:15] + "..." if len(tid) > 18 else tid
+                ts = log["timestamp"]
+                ts_display = ts.split(".")[0].replace("T", " ") if "T" in ts else ts
+                ctx = log["context_key"]
+                tool = log["tool_name"]
+                rew = log["reward"]
+                if rew is None:
+                    rew_display = "*Pending feedback*"
+                elif rew == 1.0:
+                    rew_display = "**1.0 (Success)**"
+                elif rew == 0.0:
+                    rew_display = "0.0 (Failure)"
+                else:
+                    rew_display = f"{rew:.2f}"
+                lines.append(f"| `{tid_display}` | {ts_display} | `{ctx}` | `{tool}` | {rew_display} |")
+            lines.append("")
+
+        if all_beliefs:
             lines.append("## Raw JSON Data")
             lines.append("```json")
             lines.append(json.dumps(full_beliefs, indent=2))
