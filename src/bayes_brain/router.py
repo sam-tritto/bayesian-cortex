@@ -189,25 +189,72 @@ class BayesianToolRouter:
         trace_id = self._generate_trace_id(context_key, best_tool)
         return best_tool, trace_id
 
-    def feedback(self, context_text: str, tool_name: str, success: bool) -> Tuple[float, float]:
+    def feedback(
+        self,
+        context_text: str,
+        tool_name: str,
+        success: Optional[bool] = None,
+        reward: Optional[float] = None,
+    ) -> Tuple[float, float]:
         """
         Directly submit tool execution feedback using the raw context string.
+        Either success (boolean) or reward (float between 0.0 and 1.0) must be provided.
         """
+        if success is None and reward is None:
+            raise ValueError("Either 'success' or 'reward' must be provided.")
+
+        if success is not None and reward is not None:
+            expected_reward = 1.0 if success else 0.0
+            if reward != expected_reward:
+                raise ValueError(
+                    f"Conflicting feedback: success={success} and reward={reward}. "
+                    "Please provide only one, or ensure they are consistent."
+                )
+
+        if reward is not None:
+            if not (0.0 <= reward <= 1.0):
+                raise ValueError("reward must be between 0.0 and 1.0 inclusive")
+            reward_val = float(reward)
+        else:
+            reward_val = 1.0 if success else 0.0
+
         context_key = self._resolve_context_key(context_text)
-        reward = 1.0 if success else 0.0
         return self.storage.decay_and_update(
-            context_key, tool_name, self.decay_factor, reward
+            context_key, tool_name, self.decay_factor, reward_val
         )
 
-    def feedback_by_trace(self, trace_id: str, success: bool) -> Tuple[float, float]:
+    def feedback_by_trace(
+        self,
+        trace_id: str,
+        success: Optional[bool] = None,
+        reward: Optional[float] = None,
+    ) -> Tuple[float, float]:
         """
         Directly submit tool execution feedback using a generated trace ID.
         Ideal for asynchronous and decoupled systems.
+        Either success (boolean) or reward (float between 0.0 and 1.0) must be provided.
         """
+        if success is None and reward is None:
+            raise ValueError("Either 'success' or 'reward' must be provided.")
+
+        if success is not None and reward is not None:
+            expected_reward = 1.0 if success else 0.0
+            if reward != expected_reward:
+                raise ValueError(
+                    f"Conflicting feedback: success={success} and reward={reward}. "
+                    "Please provide only one, or ensure they are consistent."
+                )
+
+        if reward is not None:
+            if not (0.0 <= reward <= 1.0):
+                raise ValueError("reward must be between 0.0 and 1.0 inclusive")
+            reward_val = float(reward)
+        else:
+            reward_val = 1.0 if success else 0.0
+
         context_key, tool_name = self._decode_trace_id(trace_id)
-        reward = 1.0 if success else 0.0
         return self.storage.decay_and_update(
-            context_key, tool_name, self.decay_factor, reward
+            context_key, tool_name, self.decay_factor, reward_val
         )
 
     def get_tool_beliefs(self, context_text: str, tool_name: str) -> Tuple[float, float]:

@@ -202,3 +202,47 @@ def test_router_no_embedder_warning(caplog):
     
     warnings = [rec.message for rec in caplog.records if rec.levelname == "WARNING"]
     assert any("No ContextEmbedder provided" in w for w in warnings)
+
+
+def test_continuous_rewards():
+    storage = InMemoryStorage()
+    router = BayesianToolRouter(storage=storage, decay_factor=0.95)
+
+    # Resolve context key
+    key = router._resolve_context_key("continuous_task")
+
+    # 1. Test feedback using reward float
+    router.feedback("continuous_task", "tool_a", reward=0.8)
+    a, b = storage.get_tool_params(key, "tool_a")
+    # alpha: max(1.0, 1 * 0.95 + 0.8) = 1.75
+    # beta: max(1.0, 1 * 0.95 + 0.2) = 1.15
+    assert a == pytest.approx(1.75)
+    assert b == pytest.approx(1.15)
+
+    # 2. Test feedback_by_trace using reward float
+    _, trace_id = router.route_with_trace("continuous_task", ["tool_a"])
+    router.feedback_by_trace(trace_id, reward=0.4)
+    # alpha: max(1.0, 1.75 * 0.95 + 0.4) = 1.6625 + 0.4 = 2.0625
+    # beta: max(1.0, 1.15 * 0.95 + 0.6) = 1.0925 + 0.6 = 1.6925
+    a2, b2 = storage.get_tool_params(key, "tool_a")
+    assert a2 == pytest.approx(2.0625)
+    assert b2 == pytest.approx(1.6925)
+
+    # 3. Test value validations
+    with pytest.raises(ValueError, match="Either 'success' or 'reward' must be provided"):
+        router.feedback("continuous_task", "tool_a")
+
+    with pytest.raises(ValueError, match="reward must be between 0.0 and 1.0 inclusive"):
+        router.feedback("continuous_task", "tool_a", reward=1.5)
+
+    with pytest.raises(ValueError, match="reward must be between 0.0 and 1.0 inclusive"):
+        router.feedback("continuous_task", "tool_a", reward=-0.1)
+
+    # 4. Test conflicting success and reward
+    with pytest.raises(ValueError, match="Conflicting feedback"):
+        router.feedback("continuous_task", "tool_a", success=True, reward=0.5)
+
+    # 5. Test consistent success and reward (should succeed)
+    router.feedback("continuous_task", "tool_a", success=True, reward=1.0)
+    router.feedback("continuous_task", "tool_a", success=False, reward=0.0)
+
