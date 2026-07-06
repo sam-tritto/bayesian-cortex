@@ -29,7 +29,7 @@ from bayes_brain.storage import (
 logger = logging.getLogger(__name__)
 
 
-class BayesianToolRouter:
+class BayesianRouter:
     """
     Decoupled tool routing middleware implementing a Contextual Multi-Armed Bandit
     via Thompson Sampling.
@@ -54,9 +54,12 @@ class BayesianToolRouter:
         hybrid: bool = False,
         tool_embeddings: Optional[Dict[str, Union[Sequence[float], np.ndarray]]] = None,
         tool_metadata: Optional[Dict[str, str]] = None,
+        storage_backend: Optional[str] = None,
+        storage_path: Optional[str] = None,
+        storage_kwargs: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
-        Initialize the BayesianToolRouter.
+        Initialize the BayesianRouter.
 
         Args:
             storage: Storage backend for persisting alphas and betas. Defaults to InMemoryStorage.
@@ -74,7 +77,30 @@ class BayesianToolRouter:
             hybrid: Whether to use shared-parameter (hybrid) contextual bandit.
             tool_embeddings: Dict mapping tool name to its embedding vector.
             tool_metadata: Dict mapping tool name to its metadata string.
+            storage_backend: Optional name of storage backend ("sqlite", "redis", "memory").
+            storage_path: Optional file path or URL for the storage backend.
+            storage_kwargs: Optional additional arguments for the storage backend.
         """
+        if storage_backend is not None:
+            if storage is not None:
+                raise ValueError("Cannot specify both 'storage' and 'storage_backend'")
+            storage_kwargs = storage_kwargs or {}
+            if storage_backend == "sqlite":
+                from bayes_brain.storage import SQLiteStorage
+                storage = SQLiteStorage(db_path=storage_path or "bayes_brain.db", **storage_kwargs)
+            elif storage_backend == "redis":
+                from bayes_brain.storage import RedisStorage
+                if isinstance(storage_path, str) or storage_path is None:
+                    import redis
+                    client = redis.from_url(storage_path or "redis://localhost:6379")
+                else:
+                    client = storage_path
+                storage = RedisStorage(redis_client=client, **storage_kwargs)
+            elif storage_backend in ("memory", "in-memory"):
+                storage = InMemoryStorage(**storage_kwargs)
+            else:
+                raise ValueError(f"Unknown storage_backend: {storage_backend}")
+
         self.storage = storage or InMemoryStorage()
         self.embedder = embedder
         self.fallback_tool = fallback_tool
@@ -355,21 +381,47 @@ class BayesianToolRouter:
         except Exception as e:
             raise ValueError(f"Invalid or corrupted trace ID: {trace_id}") from e
 
-    def route(self, context_text: str, candidate_tools: List[str]) -> str:
+    def route(
+        self,
+        context_text: Optional[str] = None,
+        candidate_tools: Optional[List[str]] = None,
+        context_key: Optional[str] = None,
+        candidates: Optional[List[str]] = None,
+    ) -> str:
         """
-        Implements Thompson Sampling across a filtered list of valid tools.
-        Returns the name of the tool selected.
+        Implements Thompson Sampling across a filtered list of valid tools/skills.
+        Returns the name of the selected candidate.
         """
-        chosen_tool, _ = self.route_with_trace(context_text, candidate_tools)
+        chosen_tool, _ = self.route_with_trace(
+            context_text=context_text,
+            candidate_tools=candidate_tools,
+            context_key=context_key,
+            candidates=candidates,
+        )
         return chosen_tool
 
     def route_with_trace(
-        self, context_text: str, candidate_tools: List[str]
+        self,
+        context_text: Optional[str] = None,
+        candidate_tools: Optional[List[str]] = None,
+        context_key: Optional[str] = None,
+        candidates: Optional[List[str]] = None,
     ) -> Tuple[str, str]:
         """
-        Implements Thompson Sampling and returns a tuple of (chosen_tool_name, trace_id).
+        Implements Thompson Sampling and returns a tuple of (chosen_candidate_name, trace_id).
         The trace_id allows reward signals to be logged completely asynchronously.
         """
+        resolved_context = context_text if context_text is not None else context_key
+        if resolved_context is None:
+            raise ValueError("Must provide either 'context_text' or 'context_key'")
+
+        resolved_candidates = candidate_tools if candidate_tools is not None else candidates
+        if resolved_candidates is None:
+            raise ValueError("Must provide either 'candidate_tools' or 'candidates'")
+
+        context_text = resolved_context
+        candidate_tools = resolved_candidates
+
         if not candidate_tools:
             raise ValueError("Candidate tools list cannot be empty")
 
@@ -562,15 +614,34 @@ class BayesianToolRouter:
 
     def feedback(
         self,
-        context_text: str,
-        tool_name: str,
+        context_text: Optional[str] = None,
+        tool_name: Optional[str] = None,
         success: Optional[bool] = None,
         reward: Optional[float] = None,
+        context_key: Optional[str] = None,
+        candidate_name: Optional[str] = None,
+        skill_name: Optional[str] = None,
+        candidate: Optional[str] = None,
     ) -> Tuple[float, float]:
         """
         Directly submit tool execution feedback using the raw context string.
         Either success (boolean) or reward (float between 0.0 and 1.0) must be provided.
         """
+        resolved_context = context_text if context_text is not None else context_key
+        if resolved_context is None:
+            raise ValueError("Must provide either 'context_text' or 'context_key'")
+
+        resolved_tool = None
+        for val in (tool_name, candidate_name, skill_name, candidate):
+            if val is not None:
+                resolved_tool = val
+                break
+        if resolved_tool is None:
+            raise ValueError("Must provide a tool/candidate/skill name.")
+
+        context_text = resolved_context
+        tool_name = resolved_tool
+
         if success is None and reward is None:
             raise ValueError("Either 'success' or 'reward' must be provided.")
 
@@ -822,10 +893,33 @@ class BayesianToolRouter:
                     logger.error(f"Telemetry hook failed: {hook_err}")
             return 1.0, 1.0
 
-    def get_tool_beliefs(self, context_text: str, tool_name: str) -> Tuple[float, float]:
+    def get_tool_beliefs(
+        self,
+        context_text: Optional[str] = None,
+        tool_name: Optional[str] = None,
+        context_key: Optional[str] = None,
+        candidate_name: Optional[str] = None,
+        skill_name: Optional[str] = None,
+        candidate: Optional[str] = None,
+    ) -> Tuple[float, float]:
         """
         Retrieve current posterior alpha and beta beliefs (or expected reward and uncertainty) for a given context and tool.
         """
+        resolved_context = context_text if context_text is not None else context_key
+        if resolved_context is None:
+            raise ValueError("Must provide either 'context_text' or 'context_key'")
+
+        resolved_tool = None
+        for val in (tool_name, candidate_name, skill_name, candidate):
+            if val is not None:
+                resolved_tool = val
+                break
+        if resolved_tool is None:
+            raise ValueError("Must provide a tool/candidate/skill name.")
+
+        context_text = resolved_context
+        tool_name = resolved_tool
+
         try:
             context_key = self._resolve_context_key(context_text)
             if self.mode == "clustering":
@@ -947,13 +1041,29 @@ class BayesianToolRouter:
 
         return resolved_keys
 
-    def route_batch(self, contexts: List[str], candidate_tools: List[str]) -> List[str]:
-        results = self.route_batch_with_trace(contexts, candidate_tools)
+    def route_batch(
+        self,
+        contexts: List[str],
+        candidate_tools: Optional[List[str]] = None,
+        candidates: Optional[List[str]] = None,
+    ) -> List[str]:
+        resolved_candidates = candidate_tools if candidate_tools is not None else candidates
+        if resolved_candidates is None:
+            raise ValueError("Must provide either 'candidate_tools' or 'candidates'")
+        results = self.route_batch_with_trace(contexts, candidate_tools=resolved_candidates)
         return [tool for tool, _ in results]
 
     def route_batch_with_trace(
-        self, contexts: List[str], candidate_tools: List[str]
+        self,
+        contexts: List[str],
+        candidate_tools: Optional[List[str]] = None,
+        candidates: Optional[List[str]] = None,
     ) -> List[Tuple[str, str]]:
+        resolved_candidates = candidate_tools if candidate_tools is not None else candidates
+        if resolved_candidates is None:
+            raise ValueError("Must provide either 'candidate_tools' or 'candidates'")
+        candidate_tools = resolved_candidates
+
         if not candidate_tools:
             raise ValueError("Candidate tools list cannot be empty")
         if not contexts:
@@ -1218,10 +1328,14 @@ class BayesianToolRouter:
                         "reward_val": reward_val,
                     })
                 else:
-                    context_text = fb.get("context_text")
-                    tool_name = fb.get("tool_name")
+                    context_text = fb.get("context_text") if fb.get("context_text") is not None else fb.get("context_key")
+                    tool_name = None
+                    for k in ("tool_name", "candidate_name", "skill_name", "candidate"):
+                        if fb.get(k) is not None:
+                            tool_name = fb.get(k)
+                            break
                     if not context_text or not tool_name:
-                        raise ValueError("Feedback must contain either 'trace_id' or both 'context_text' and 'tool_name'.")
+                        raise ValueError("Feedback must contain either 'trace_id' or context and candidate identifiers.")
                     
                     prepared_feedbacks.append({
                         "type": "text",
@@ -1336,7 +1450,7 @@ class BayesianToolRouter:
 
 
 
-class AsyncBayesianToolRouter:
+class AsyncBayesianRouter:
     """
     Decoupled tool routing middleware implementing a Contextual Multi-Armed Bandit
     via Thompson Sampling with fully asynchronous operation.
@@ -1361,10 +1475,33 @@ class AsyncBayesianToolRouter:
         hybrid: bool = False,
         tool_embeddings: Optional[Dict[str, Union[Sequence[float], np.ndarray]]] = None,
         tool_metadata: Optional[Dict[str, str]] = None,
+        storage_backend: Optional[str] = None,
+        storage_path: Optional[str] = None,
+        storage_kwargs: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
-        Initialize the AsyncBayesianToolRouter.
+        Initialize the AsyncBayesianRouter.
         """
+        if storage_backend is not None:
+            if storage is not None:
+                raise ValueError("Cannot specify both 'storage' and 'storage_backend'")
+            storage_kwargs = storage_kwargs or {}
+            if storage_backend == "sqlite":
+                from bayes_brain.storage import AsyncSQLiteStorage
+                storage = AsyncSQLiteStorage(db_path=storage_path or "bayes_brain.db", **storage_kwargs)
+            elif storage_backend == "redis":
+                from bayes_brain.storage import AsyncRedisStorage
+                if isinstance(storage_path, str) or storage_path is None:
+                    import redis.asyncio as aioredis
+                    client = aioredis.from_url(storage_path or "redis://localhost:6379")
+                else:
+                    client = storage_path
+                storage = AsyncRedisStorage(redis_client=client, **storage_kwargs)
+            elif storage_backend in ("memory", "in-memory"):
+                storage = AsyncInMemoryStorage(**storage_kwargs)
+            else:
+                raise ValueError(f"Unknown storage_backend: {storage_backend}")
+
         self.storage = storage or AsyncInMemoryStorage()
         self.embedder = embedder
         self.fallback_tool = fallback_tool
@@ -1669,13 +1806,39 @@ class AsyncBayesianToolRouter:
         except Exception as hook_err:
             logger.error(f"Telemetry hook failed: {hook_err}")
 
-    async def aroute(self, context_text: str, candidate_tools: List[str]) -> str:
-        chosen_tool, _ = await self.aroute_with_trace(context_text, candidate_tools)
+    async def aroute(
+        self,
+        context_text: Optional[str] = None,
+        candidate_tools: Optional[List[str]] = None,
+        context_key: Optional[str] = None,
+        candidates: Optional[List[str]] = None,
+    ) -> str:
+        chosen_tool, _ = await self.aroute_with_trace(
+            context_text=context_text,
+            candidate_tools=candidate_tools,
+            context_key=context_key,
+            candidates=candidates,
+        )
         return chosen_tool
 
     async def aroute_with_trace(
-        self, context_text: str, candidate_tools: List[str]
+        self,
+        context_text: Optional[str] = None,
+        candidate_tools: Optional[List[str]] = None,
+        context_key: Optional[str] = None,
+        candidates: Optional[List[str]] = None,
     ) -> Tuple[str, str]:
+        resolved_context = context_text if context_text is not None else context_key
+        if resolved_context is None:
+            raise ValueError("Must provide either 'context_text' or 'context_key'")
+
+        resolved_candidates = candidate_tools if candidate_tools is not None else candidates
+        if resolved_candidates is None:
+            raise ValueError("Must provide either 'candidate_tools' or 'candidates'")
+
+        context_text = resolved_context
+        candidate_tools = resolved_candidates
+
         if not candidate_tools:
             raise ValueError("Candidate tools list cannot be empty")
 
@@ -1876,11 +2039,30 @@ class AsyncBayesianToolRouter:
 
     async def afeedback(
         self,
-        context_text: str,
-        tool_name: str,
+        context_text: Optional[str] = None,
+        tool_name: Optional[str] = None,
         success: Optional[bool] = None,
         reward: Optional[float] = None,
+        context_key: Optional[str] = None,
+        candidate_name: Optional[str] = None,
+        skill_name: Optional[str] = None,
+        candidate: Optional[str] = None,
     ) -> Tuple[float, float]:
+        resolved_context = context_text if context_text is not None else context_key
+        if resolved_context is None:
+            raise ValueError("Must provide either 'context_text' or 'context_key'")
+
+        resolved_tool = None
+        for val in (tool_name, candidate_name, skill_name, candidate):
+            if val is not None:
+                resolved_tool = val
+                break
+        if resolved_tool is None:
+            raise ValueError("Must provide a tool/candidate/skill name.")
+
+        context_text = resolved_context
+        tool_name = resolved_tool
+
         if success is None and reward is None:
             raise ValueError("Either 'success' or 'reward' must be provided.")
 
@@ -2135,7 +2317,30 @@ class AsyncBayesianToolRouter:
             )
             return 1.0, 1.0
 
-    async def aget_tool_beliefs(self, context_text: str, tool_name: str) -> Tuple[float, float]:
+    async def aget_tool_beliefs(
+        self,
+        context_text: Optional[str] = None,
+        tool_name: Optional[str] = None,
+        context_key: Optional[str] = None,
+        candidate_name: Optional[str] = None,
+        skill_name: Optional[str] = None,
+        candidate: Optional[str] = None,
+    ) -> Tuple[float, float]:
+        resolved_context = context_text if context_text is not None else context_key
+        if resolved_context is None:
+            raise ValueError("Must provide either 'context_text' or 'context_key'")
+
+        resolved_tool = None
+        for val in (tool_name, candidate_name, skill_name, candidate):
+            if val is not None:
+                resolved_tool = val
+                break
+        if resolved_tool is None:
+            raise ValueError("Must provide a tool/candidate/skill name.")
+
+        context_text = resolved_context
+        tool_name = resolved_tool
+
         await self._ensure_initialized()
         try:
             context_key = await self._resolve_context_key(context_text)
@@ -2272,13 +2477,29 @@ class AsyncBayesianToolRouter:
 
         return resolved_keys
 
-    async def aroute_batch(self, contexts: List[str], candidate_tools: List[str]) -> List[str]:
-        results = await self.aroute_batch_with_trace(contexts, candidate_tools)
+    async def aroute_batch(
+        self,
+        contexts: List[str],
+        candidate_tools: Optional[List[str]] = None,
+        candidates: Optional[List[str]] = None,
+    ) -> List[str]:
+        resolved_candidates = candidate_tools if candidate_tools is not None else candidates
+        if resolved_candidates is None:
+            raise ValueError("Must provide either 'candidate_tools' or 'candidates'")
+        results = await self.aroute_batch_with_trace(contexts, candidate_tools=resolved_candidates)
         return [tool for tool, _ in results]
 
     async def aroute_batch_with_trace(
-        self, contexts: List[str], candidate_tools: List[str]
+        self,
+        contexts: List[str],
+        candidate_tools: Optional[List[str]] = None,
+        candidates: Optional[List[str]] = None,
     ) -> List[Tuple[str, str]]:
+        resolved_candidates = candidate_tools if candidate_tools is not None else candidates
+        if resolved_candidates is None:
+            raise ValueError("Must provide either 'candidate_tools' or 'candidates'")
+        candidate_tools = resolved_candidates
+
         if not candidate_tools:
             raise ValueError("Candidate tools list cannot be empty")
         if not contexts:
@@ -2551,10 +2772,14 @@ class AsyncBayesianToolRouter:
                         "reward_val": reward_val,
                     })
                 else:
-                    context_text = fb.get("context_text")
-                    tool_name = fb.get("tool_name")
+                    context_text = fb.get("context_text") if fb.get("context_text") is not None else fb.get("context_key")
+                    tool_name = None
+                    for k in ("tool_name", "candidate_name", "skill_name", "candidate"):
+                        if fb.get(k) is not None:
+                            tool_name = fb.get(k)
+                            break
                     if not context_text or not tool_name:
-                        raise ValueError("Feedback must contain either 'trace_id' or both 'context_text' and 'tool_name'.")
+                        raise ValueError("Feedback must contain either 'trace_id' or context and candidate identifiers.")
                     
                     prepared_feedbacks.append({
                         "type": "text",
@@ -2666,5 +2891,11 @@ class AsyncBayesianToolRouter:
         except Exception as e:
             logger.exception("AsyncBayesianToolRouter batch feedback submission failed.")
             await self._call_telemetry("feedback_batch_failure", e, {"feedbacks": feedbacks})
+
+
+# Backward compatibility aliases
+BayesianToolRouter = BayesianRouter
+AsyncBayesianToolRouter = AsyncBayesianRouter
+
 
 

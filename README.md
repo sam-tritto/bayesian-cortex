@@ -2,11 +2,14 @@
   <img src="assets/logo.png" alt="BayesBrain Logo" width="400">
 </p>
 
-# BayesBrain: Dynamic Tool Routing via Bayesian Bandits
+# BayesBrain: Dynamic Tool & Skill Routing via Bayesian Bandits
 
-In multi-agent systems, a supervisor agent often needs to decide which specialized sub-agent or API tool to invoke to solve a specific user prompt. Traditionally, this is done using hardcoded heuristics, prompt engineering, or raw LLM classification logits. None of these handle real-time uncertainty or feedback loops well.
+In multi-agent systems, a supervisor agent often needs to decide which specialized sub-agent, API tool, or prompt workflow (skill) to invoke to solve a specific user task. Traditionally, this is done using hardcoded heuristics, prompt engineering, or raw LLM classification logits. None of these handle real-time uncertainty or silent failures well.
 
-**BayesBrain** treats tool routing as a **Contextual Multi-Armed Bandit** using **Thompson Sampling** (or **Upper Confidence Bound**) with exact conjugate updates. It dynamically learns the most reliable tool or configuration under semantic context clusters, adapting in real time to API failures, drift, or changing developer requirements.
+**BayesBrain** treats both tool and skill routing as a **Contextual Multi-Armed Bandit** using **Thompson Sampling** (or **Upper Confidence Bound**) with exact conjugate updates. It dynamically learns the most reliable tool or prompt candidate under semantic context clusters, adapting in real time to API failures, silent prompt hallucinations, or changing environment dynamics.
+
+* **Tools (The Hands)**: Deterministic, discrete, and input-output bound (e.g. SQL queries, API hits, or running code).
+* **Skills (The Cognitive Engines)**: Heuristic, prompt-heavy, and workflow-bound (e.g. a specialized system prompt, custom Standard Operating Procedure, or chain-of-thought routing loop). Since skills fail silently rather than throwing errors, posterior-guided Bayesian routing is vital for mapping and selecting the most reliable prompt variant over time.
 
 ---
 
@@ -106,38 +109,47 @@ For advanced features, ensure the following database dependencies are satisfied:
 
 ### Synchronous API
 
+By supporting both Tools and Skills, `bayes_brain` manages routing uncertainty under a single unified class:
+
 ```python
-from bayes_brain.router import BayesianToolRouter
-from bayes_brain.storage import SQLiteStorage
+from bayes_brain import BayesianRouter
 from bayes_brain.embeddings import GeminiEmbedder
 
-# SQLiteStorage supports concurrent WAL mode and busy timeouts
-storage = SQLiteStorage("bayes_cache.db")
+# 1. Initialize router using auto-configured SQLite backend
 embedder = GeminiEmbedder(model_name="models/text-embedding-004")
-
-router = BayesianToolRouter(
-    storage=storage,
+router = BayesianRouter(
+    storage_backend="sqlite",
+    storage_path="bayes_cache.db",
     embedder=embedder,
-    decay_factor=0.95,
-    fallback_tool="fallback_llm"
+    decay_factor=0.95
 )
 
-context_prompt = "Summarize the latest AI research papers"
-candidates = ["arxiv_rag", "google_search", "fallback_llm"]
-
-# 1. Route the request (Thompson Sampling)
+# Scenario A: Tool Routing (deterministic, input-output bound)
 chosen_tool = router.route(
-    context_text=context_prompt,
-    candidate_tools=candidates
+    context_key="Fetch user profile from PostgreSQL", 
+    candidates=["sql_tool", "vector_tool", "graphql_tool"]
 )
-print(f"Routed task to: {chosen_tool}")
+print(f"Routed to tool: {chosen_tool}")
 
-# 2. Provide feedback (binary success or continuous reward)
+# Provide feedback
 router.feedback(
-    context_text=context_prompt,
-    tool_name=chosen_tool,
-    success=True,
-    reward=1.0
+    context_key="Fetch user profile from PostgreSQL",
+    candidate=chosen_tool,
+    success=True
+)
+
+# Scenario B: Skill / Prompt Routing (heuristic, workflow-bound)
+chosen_skill = router.route(
+    context_key="Refactor this legacy asyncio network loop", 
+    candidates=["skills/async-expert", "skills/naive-coder", "skills/strict-defensive"]
+)
+print(f"Routed to skill prompt: {chosen_skill}")
+
+# Provide feedback (e.g. if generated code compiles/passes unit tests)
+router.feedback(
+    context_key="Refactor this legacy asyncio network loop",
+    candidate=chosen_skill,
+    success=True
 )
 ```
 
@@ -147,41 +159,37 @@ For asynchronous, non-blocking workflows in web applications (FastAPI, FastMCP) 
 
 ```python
 import asyncio
-from bayes_brain.router import AsyncBayesianToolRouter
-from bayes_brain.storage import AsyncSQLiteStorage
+from bayes_brain import AsyncBayesianRouter
 from bayes_brain.embeddings import GeminiEmbedder
 
 async def main():
-    storage = AsyncSQLiteStorage("bayes_cache.db")
     embedder = GeminiEmbedder(model_name="models/text-embedding-004")
-
-    router = AsyncBayesianToolRouter(
-        storage=storage,
+    router = AsyncBayesianRouter(
+        storage_backend="sqlite",
+        storage_path="bayes_cache.db",
         embedder=embedder,
-        decay_factor=0.95,
-        fallback_tool="fallback_llm"
+        decay_factor=0.95
     )
 
-    context_prompt = "Summarize the latest AI research papers"
-    candidates = ["arxiv_rag", "google_search", "fallback_llm"]
-
-    # 1. Async Route
-    chosen_tool = await router.aroute(
-        context_text=context_prompt,
-        candidate_tools=candidates
+    # Async Route
+    chosen_skill = await router.aroute(
+        context_key="Refactor this legacy asyncio network loop", 
+        candidates=["skills/async-expert", "skills/naive-coder", "skills/strict-defensive"]
     )
-    print(f"Routed task to: {chosen_tool}")
+    print(f"Routed to: {chosen_skill}")
 
-    # 2. Async Feedback
+    # Async Feedback
     await router.afeedback(
-        context_text=context_prompt,
-        tool_name=chosen_tool,
-        success=True,
-        reward=1.0
+        context_key="Refactor this legacy asyncio network loop",
+        candidate=chosen_skill,
+        success=True
     )
 
 asyncio.run(main())
 ```
+
+> [!NOTE]
+> `BayesianToolRouter` and `AsyncBayesianToolRouter` are fully preserved as functional aliases for backward compatibility.
 
 ---
 
@@ -202,7 +210,7 @@ vector_store = SQLiteVectorStore(
     table_name="vec_context_store"
 )
 
-router = BayesianToolRouter(
+router = BayesianRouter(
     storage=storage,
     embedder=embedder,
     vector_store=vector_store
@@ -213,7 +221,7 @@ router = BayesianToolRouter(
 Switch from discrete clustering to linear regression-based generalization to handle continuous feature spaces:
 
 ```python
-router = BayesianToolRouter(
+router = BayesianRouter(
     storage=storage,
     embedder=embedder,
     mode="lints",                 # "clustering", "lints", or "linucb"
@@ -247,7 +255,7 @@ tool_metadata = {
     "web_search": "Search the web for real-time information"
 }
 
-router = BayesianToolRouter(
+router = BayesianRouter(
     storage=storage,
     embedder=embedder,
     mode="linucb",
@@ -287,7 +295,7 @@ router.feedback_batch(feedbacks)
 To prevent client-side reward-poisoning and tampering attacks in decoupled or asynchronous setups, BayesBrain signs trace IDs using an HMAC-SHA256 signature.
 
 ```python
-router = BayesianToolRouter(
+router = BayesianRouter(
     storage=storage,
     embedder=embedder,
     secret_key="my-app-secure-hmac-key" # Auto-generates random 32-byte key if omitted
@@ -316,7 +324,7 @@ contextual_priors = [
     }
 ]
 
-router = BayesianToolRouter(
+router = BayesianRouter(
     storage=storage,
     embedder=embedder,
     contextual_priors=contextual_priors

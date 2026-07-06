@@ -12,7 +12,12 @@ from bayes_brain.embeddings import (
     VectorStoreProtocol,
 )
 from bayes_brain.mcp_server import create_mcp_server
-from bayes_brain.router import AsyncBayesianToolRouter, BayesianToolRouter
+from bayes_brain.router import (
+    AsyncBayesianRouter,
+    AsyncBayesianToolRouter,
+    BayesianRouter,
+    BayesianToolRouter,
+)
 from bayes_brain.storage import (
     AsyncBaseStorage,
     AsyncInMemoryStorage,
@@ -25,6 +30,8 @@ from bayes_brain.storage import (
 )
 
 __all__ = [
+    "BayesianRouter",
+    "AsyncBayesianRouter",
     "BayesianToolRouter",
     "AsyncBayesianToolRouter",
     "BaseStorage",
