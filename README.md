@@ -1,6 +1,7 @@
 <p align="center">
   <img src="assets/logo.png" alt="BayesBrain Logo" width="400">
 </p>
+
 # BayesBrain: Dynamic Candidate Routing via Bayesian Bandits
 
 In intelligent agent systems, routing decisions represent the core runtime engine. **BayesBrain** treats routing as a **Contextual Multi-Armed Bandit** using **Thompson Sampling** (or **Upper Confidence Bound**) with exact conjugate updates. It dynamically learns the most reliable option under semantic context clusters, adapting in real time to failures, hallucinations, or shifting environment dynamics.
