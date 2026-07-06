@@ -554,6 +554,312 @@ class BayesianToolRouter:
                     logger.error(f"Telemetry hook failed: {hook_err}")
             return 1.0, 1.0
 
+    def _resolve_context_keys(self, contexts: List[str]) -> List[str]:
+        if not self.embedder:
+            return [self._hash_context_text(ctx) for ctx in contexts]
+
+        try:
+            if hasattr(self.embedder, "embed_queries"):
+                vectors = self.embedder.embed_queries(contexts)
+            else:
+                vectors = [self.embedder.embed_query(ctx) for ctx in contexts]
+        except Exception:
+            logger.warning(
+                "Failed to generate embeddings in batch. Falling back to exact-match hashing."
+            )
+            return [self._hash_context_text(ctx) for ctx in contexts]
+
+        resolved_keys = []
+        new_contexts_to_save = []
+
+        for vector in vectors:
+            matched_key = self._context_store.get_nearest_context(
+                query_vector=vector,
+                similarity_threshold=self.similarity_threshold,
+            )
+
+            if matched_key is not None:
+                resolved_keys.append(matched_key)
+            else:
+                new_key = f"ctx_{uuid.uuid4().hex}"
+                self._context_store.add_context(new_key, vector)
+                if not self._custom_vector_store_active:
+                    new_contexts_to_save.append((new_key, vector))
+                resolved_keys.append(new_key)
+
+        if new_contexts_to_save:
+            if hasattr(self.storage, "save_vectors"):
+                self.storage.save_vectors(dict(new_contexts_to_save))
+            else:
+                for k, v in new_contexts_to_save:
+                    self.storage.save_vector(k, v)
+
+        return resolved_keys
+
+    def route_batch(self, contexts: List[str], candidate_tools: List[str]) -> List[str]:
+        results = self.route_batch_with_trace(contexts, candidate_tools)
+        return [tool for tool, _ in results]
+
+    def route_batch_with_trace(
+        self, contexts: List[str], candidate_tools: List[str]
+    ) -> List[Tuple[str, str]]:
+        if not candidate_tools:
+            raise ValueError("Candidate tools list cannot be empty")
+        if not contexts:
+            return []
+
+        try:
+            if self.mode == "clustering":
+                context_keys = self._resolve_context_keys(contexts)
+                
+                param_keys = [(ctx_key, tool_name) for ctx_key in context_keys for tool_name in candidate_tools]
+                param_dict = self.storage.get_tool_params_batch(param_keys)
+                
+                priors_to_update = {}
+                results = []
+                for context_key in context_keys:
+                    best_tool = None
+                    highest_sample = -1.0
+
+                    for tool_name in candidate_tools:
+                        alpha, beta = param_dict.get((context_key, tool_name), (1.0, 1.0))
+
+                        if alpha == 1.0 and beta == 1.0 and tool_name in self.priors:
+                            alpha, beta = self.priors[tool_name]
+                            priors_to_update[(context_key, tool_name)] = (alpha, beta)
+
+                        sampled_score = np.random.beta(alpha, beta)
+
+                        if sampled_score > highest_sample:
+                            highest_sample = sampled_score
+                            best_tool = tool_name
+
+                    if best_tool is None:
+                        best_tool = candidate_tools[0]
+
+                    trace_id = self._generate_trace_id(context_key, best_tool)
+                    results.append((best_tool, trace_id))
+
+                if priors_to_update:
+                    if hasattr(self.storage, "update_tool_params_batch"):
+                        self.storage.update_tool_params_batch(priors_to_update)
+                    else:
+                        for (ctx_key, tool_name), (alpha, beta) in priors_to_update.items():
+                            self.storage.update_tool_params(ctx_key, tool_name, alpha, beta)
+
+                return results
+
+            else:
+                if self.embedder is None:
+                    raise ValueError("embedder is required for linear bandit mode")
+                
+                if hasattr(self.embedder, "embed_queries"):
+                    vectors = self.embedder.embed_queries(contexts)
+                else:
+                    vectors = [self.embedder.embed_query(ctx) for ctx in contexts]
+                
+                tool_params = {}
+                if hasattr(self.storage, "get_linear_params_batch"):
+                    tool_params = self.storage.get_linear_params_batch(candidate_tools)
+                else:
+                    for tool_name in candidate_tools:
+                        tool_params[tool_name] = self.storage.get_linear_params(tool_name)
+
+                context_keys = self._resolve_context_keys(contexts)
+                results = []
+                for idx, x_seq in enumerate(vectors):
+                    x = np.array(x_seq, dtype=np.float32)
+                    d = len(x)
+                    x_augmented = np.append(x, 1.0)
+                    d_aug = d + 1
+                    context_key = context_keys[idx]
+                    
+                    best_tool = None
+                    highest_score = -float("inf")
+                    
+                    for tool_name in candidate_tools:
+                        if tool_name in self.priors:
+                            alpha, beta = self.priors[tool_name]
+                            prior_p = alpha / (alpha + beta)
+                        else:
+                            prior_p = 0.5
+                        
+                        precision, reward_vector = tool_params.get(tool_name, (None, None))
+                        if precision is None or reward_vector is None:
+                            precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                            reward_vector = np.zeros(d_aug, dtype=np.float32)
+                            reward_vector[-1] = self.lambda_val * prior_p
+
+                        if self.diagonal_covariance:
+                            theta_hat = reward_vector / precision
+                        else:
+                            theta_hat = np.linalg.solve(precision, reward_vector)
+
+                        if self.mode == "lints":
+                            if self.diagonal_covariance:
+                                std_devs = self.exploration_weight / np.sqrt(precision)
+                                theta_sample = np.random.normal(theta_hat, std_devs)
+                            else:
+                                cov = np.linalg.inv(precision)
+                                cov = 0.5 * (cov + cov.T)
+                                try:
+                                    L = np.linalg.cholesky(cov)
+                                    z = np.random.normal(size=d_aug)
+                                    theta_sample = theta_hat + self.exploration_weight * np.dot(L, z)
+                                except np.linalg.LinAlgError:
+                                    theta_sample = np.random.multivariate_normal(
+                                        theta_hat, (self.exploration_weight ** 2) * cov
+                                    )
+                            score = float(np.dot(x_augmented, theta_sample))
+                        else:
+                            expected_reward = float(np.dot(x_augmented, theta_hat))
+                            if self.diagonal_covariance:
+                                uncertainty = np.sqrt(np.sum((x_augmented ** 2) / precision))
+                            else:
+                                cov = np.linalg.inv(precision)
+                                uncertainty = np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented)))
+                            score = expected_reward + self.exploration_weight * uncertainty
+
+                        if score > highest_score:
+                            highest_score = score
+                            best_tool = tool_name
+
+                    if best_tool is None:
+                        best_tool = candidate_tools[0]
+
+                    trace_id = self._generate_trace_id(context_key, best_tool)
+                    results.append((best_tool, trace_id))
+
+                return results
+
+        except Exception as e:
+            logger.exception("BayesianToolRouter batch routing failed. Triggering fail-safe fallback.")
+            if self.telemetry_hook:
+                try:
+                    self.telemetry_hook(
+                        "route_batch_failure",
+                        e,
+                        {
+                            "contexts": contexts,
+                            "candidate_tools": candidate_tools,
+                        },
+                    )
+                except Exception as hook_err:
+                    logger.error(f"Telemetry hook failed: {hook_err}")
+
+            fallback_choice = self.fallback_tool if (self.fallback_tool and self.fallback_tool in candidate_tools) else candidate_tools[0]
+            fallback_trace_id = self._generate_trace_id("fallback_ctx", fallback_choice)
+            return [(fallback_choice, fallback_trace_id)] * len(contexts)
+
+    def feedback_batch(self, feedbacks: List[Dict[str, Any]]) -> None:
+        if not feedbacks:
+            return
+
+        try:
+            contexts_to_embed = []
+            contexts_to_embed_indices = []
+            prepared_feedbacks = []
+            
+            for fb in feedbacks:
+                success = fb.get("success")
+                reward = fb.get("reward")
+                
+                if success is None and reward is None:
+                    raise ValueError("Either 'success' or 'reward' must be provided in feedback.")
+                if success is not None and reward is not None:
+                    expected_reward = 1.0 if success else 0.0
+                    if reward != expected_reward:
+                        raise ValueError(
+                            f"Conflicting feedback: success={success} and reward={reward}."
+                        )
+                
+                reward_val = float(reward) if reward is not None else (1.0 if success else 0.0)
+                
+                trace_id = fb.get("trace_id")
+                if trace_id is not None:
+                    context_key, tool_name = self._decode_trace_id(trace_id)
+                    prepared_feedbacks.append({
+                        "type": "trace",
+                        "context_key": context_key,
+                        "tool_name": tool_name,
+                        "reward_val": reward_val,
+                    })
+                else:
+                    context_text = fb.get("context_text")
+                    tool_name = fb.get("tool_name")
+                    if not context_text or not tool_name:
+                        raise ValueError("Feedback must contain either 'trace_id' or both 'context_text' and 'tool_name'.")
+                    
+                    prepared_feedbacks.append({
+                        "type": "text",
+                        "context_text": context_text,
+                        "tool_name": tool_name,
+                        "reward_val": reward_val,
+                    })
+                    contexts_to_embed.append(context_text)
+                    contexts_to_embed_indices.append(len(prepared_feedbacks) - 1)
+
+            if contexts_to_embed:
+                resolved_keys = self._resolve_context_keys(contexts_to_embed)
+                for idx, key in zip(contexts_to_embed_indices, resolved_keys):
+                    prepared_feedbacks[idx]["context_key"] = key
+                    
+                if self.mode != "clustering":
+                    if hasattr(self.embedder, "embed_queries"):
+                        vectors = self.embedder.embed_queries(contexts_to_embed)
+                    else:
+                        vectors = [self.embedder.embed_query(t) for t in contexts_to_embed]
+                    for idx, vector in zip(contexts_to_embed_indices, vectors):
+                        prepared_feedbacks[idx]["vector"] = vector
+
+            if self.mode == "clustering":
+                updates = []
+                for fb in prepared_feedbacks:
+                    updates.append((fb["context_key"], fb["tool_name"], self.decay_factor, fb["reward_val"]))
+                self.storage.decay_and_update_batch(updates)
+            else:
+                updates = []
+                for fb in prepared_feedbacks:
+                    tool_name = fb["tool_name"]
+                    reward_val = fb["reward_val"]
+                    
+                    if fb["type"] == "trace":
+                        x_seq = self._context_store.get_context_vector(fb["context_key"])
+                        if x_seq is None:
+                            logger.warning(
+                                f"Context vector not found for key {fb['context_key']}. Using zero vector as fallback."
+                            )
+                            d = 384
+                            precision, _ = self.storage.get_linear_params(tool_name)
+                            if precision is not None:
+                                d = len(precision) - 1
+                            x = np.zeros(d, dtype=np.float32)
+                        else:
+                            x = np.array(x_seq, dtype=np.float32)
+                    else:
+                        x = np.array(fb["vector"], dtype=np.float32)
+                    
+                    x_augmented = np.append(x, 1.0)
+                    
+                    if tool_name in self.priors:
+                        alpha, beta = self.priors[tool_name]
+                        prior_p = alpha / (alpha + beta)
+                    else:
+                        prior_p = 0.5
+                        
+                    updates.append((tool_name, self.decay_factor, reward_val, x_augmented, self.lambda_val, prior_p, self.diagonal_covariance))
+                    
+                self.storage.decay_and_update_linear_batch(updates)
+
+        except Exception as e:
+            logger.exception("BayesianToolRouter batch feedback submission failed.")
+            if self.telemetry_hook:
+                try:
+                    self.telemetry_hook("feedback_batch_failure", e, {"feedbacks": feedbacks})
+                except Exception as hook_err:
+                    logger.error(f"Telemetry hook failed: {hook_err}")
+
+
 
 class AsyncBayesianToolRouter:
     """
@@ -1067,4 +1373,320 @@ class AsyncBayesianToolRouter:
                 },
             )
             return 1.0, 1.0
+
+    async def _resolve_context_keys(self, contexts: List[str]) -> List[str]:
+        if not self.embedder:
+            return [self._hash_context_text(ctx) for ctx in contexts]
+
+        try:
+            if hasattr(self.embedder, "aembed_queries"):
+                vectors = await self.embedder.aembed_queries(contexts)
+            elif hasattr(self.embedder, "embed_queries"):
+                vectors = self.embedder.embed_queries(contexts)
+            elif hasattr(self.embedder, "aembed_query"):
+                vectors = await asyncio.gather(*(self.embedder.aembed_query(ctx) for ctx in contexts))
+            else:
+                vectors = [self.embedder.embed_query(ctx) for ctx in contexts]
+        except Exception:
+            logger.warning(
+                "Failed to generate embeddings in batch. Falling back to exact-match hashing."
+            )
+            return [self._hash_context_text(ctx) for ctx in contexts]
+
+        resolved_keys = []
+        new_contexts_to_save = []
+
+        for vector in vectors:
+            matched_key = await self._context_store.aget_nearest_context(
+                query_vector=vector,
+                similarity_threshold=self.similarity_threshold,
+            )
+
+            if matched_key is not None:
+                resolved_keys.append(matched_key)
+            else:
+                new_key = f"ctx_{uuid.uuid4().hex}"
+                await self._context_store.aadd_context(new_key, vector)
+                if not self._custom_vector_store_active:
+                    new_contexts_to_save.append((new_key, vector))
+                resolved_keys.append(new_key)
+
+        if new_contexts_to_save:
+            if hasattr(self.storage, "asave_vectors"):
+                await self.storage.asave_vectors(dict(new_contexts_to_save))
+            elif hasattr(self.storage, "save_vectors"):
+                await self.storage.save_vectors(dict(new_contexts_to_save))
+            else:
+                for k, v in new_contexts_to_save:
+                    await self.storage.save_vector(k, v)
+
+        return resolved_keys
+
+    async def aroute_batch(self, contexts: List[str], candidate_tools: List[str]) -> List[str]:
+        results = await self.aroute_batch_with_trace(contexts, candidate_tools)
+        return [tool for tool, _ in results]
+
+    async def aroute_batch_with_trace(
+        self, contexts: List[str], candidate_tools: List[str]
+    ) -> List[Tuple[str, str]]:
+        if not candidate_tools:
+            raise ValueError("Candidate tools list cannot be empty")
+        if not contexts:
+            return []
+
+        await self._ensure_initialized()
+
+        try:
+            if self.mode == "clustering":
+                context_keys = await self._resolve_context_keys(contexts)
+                
+                param_keys = [(ctx_key, tool_name) for ctx_key in context_keys for tool_name in candidate_tools]
+                param_dict = await self.storage.get_tool_params_batch(param_keys)
+                
+                priors_to_update = {}
+                results = []
+                for context_key in context_keys:
+                    best_tool = None
+                    highest_sample = -1.0
+
+                    for tool_name in candidate_tools:
+                        alpha, beta = param_dict.get((context_key, tool_name), (1.0, 1.0))
+
+                        if alpha == 1.0 and beta == 1.0 and tool_name in self.priors:
+                            alpha, beta = self.priors[tool_name]
+                            priors_to_update[(context_key, tool_name)] = (alpha, beta)
+
+                        sampled_score = np.random.beta(alpha, beta)
+
+                        if sampled_score > highest_sample:
+                            highest_sample = sampled_score
+                            best_tool = tool_name
+
+                    if best_tool is None:
+                        best_tool = candidate_tools[0]
+
+                    trace_id = self._generate_trace_id(context_key, best_tool)
+                    results.append((best_tool, trace_id))
+
+                if priors_to_update:
+                    if hasattr(self.storage, "update_tool_params_batch"):
+                        await self.storage.update_tool_params_batch(priors_to_update)
+                    else:
+                        for (ctx_key, tool_name), (alpha, beta) in priors_to_update.items():
+                            await self.storage.update_tool_params(ctx_key, tool_name, alpha, beta)
+
+                return results
+
+            else:
+                if self.embedder is None:
+                    raise ValueError("embedder is required for linear bandit mode")
+                
+                if hasattr(self.embedder, "aembed_queries"):
+                    vectors = await self.embedder.aembed_queries(contexts)
+                elif hasattr(self.embedder, "embed_queries"):
+                    vectors = self.embedder.embed_queries(contexts)
+                elif hasattr(self.embedder, "aembed_query"):
+                    vectors = await asyncio.gather(*(self.embedder.aembed_query(ctx) for ctx in contexts))
+                else:
+                    vectors = [self.embedder.embed_query(ctx) for ctx in contexts]
+                
+                tool_params = {}
+                if hasattr(self.storage, "aget_linear_params_batch"):
+                    tool_params = await self.storage.aget_linear_params_batch(candidate_tools)
+                else:
+                    for tool_name in candidate_tools:
+                        tool_params[tool_name] = await self.storage.aget_linear_params(tool_name)
+
+                context_keys = await self._resolve_context_keys(contexts)
+                results = []
+                for idx, x_seq in enumerate(vectors):
+                    x = np.array(x_seq, dtype=np.float32)
+                    d = len(x)
+                    x_augmented = np.append(x, 1.0)
+                    d_aug = d + 1
+                    context_key = context_keys[idx]
+                    
+                    best_tool = None
+                    highest_score = -float("inf")
+                    
+                    for tool_name in candidate_tools:
+                        if tool_name in self.priors:
+                            alpha, beta = self.priors[tool_name]
+                            prior_p = alpha / (alpha + beta)
+                        else:
+                            prior_p = 0.5
+                        
+                        precision, reward_vector = tool_params.get(tool_name, (None, None))
+                        if precision is None or reward_vector is None:
+                            precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                            reward_vector = np.zeros(d_aug, dtype=np.float32)
+                            reward_vector[-1] = self.lambda_val * prior_p
+
+                        if self.diagonal_covariance:
+                            theta_hat = reward_vector / precision
+                        else:
+                            theta_hat = np.linalg.solve(precision, reward_vector)
+
+                        if self.mode == "lints":
+                            if self.diagonal_covariance:
+                                std_devs = self.exploration_weight / np.sqrt(precision)
+                                theta_sample = np.random.normal(theta_hat, std_devs)
+                            else:
+                                cov = np.linalg.inv(precision)
+                                cov = 0.5 * (cov + cov.T)
+                                try:
+                                    L = np.linalg.cholesky(cov)
+                                    z = np.random.normal(size=d_aug)
+                                    theta_sample = theta_hat + self.exploration_weight * np.dot(L, z)
+                                except np.linalg.LinAlgError:
+                                    theta_sample = np.random.multivariate_normal(
+                                        theta_hat, (self.exploration_weight ** 2) * cov
+                                    )
+                            score = float(np.dot(x_augmented, theta_sample))
+                        else:
+                            expected_reward = float(np.dot(x_augmented, theta_hat))
+                            if self.diagonal_covariance:
+                                uncertainty = np.sqrt(np.sum((x_augmented ** 2) / precision))
+                            else:
+                                cov = np.linalg.inv(precision)
+                                uncertainty = np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented)))
+                            score = expected_reward + self.exploration_weight * uncertainty
+
+                        if score > highest_score:
+                            highest_score = score
+                            best_tool = tool_name
+
+                    if best_tool is None:
+                        best_tool = candidate_tools[0]
+
+                    trace_id = self._generate_trace_id(context_key, best_tool)
+                    results.append((best_tool, trace_id))
+
+                return results
+
+        except Exception as e:
+            logger.exception("AsyncBayesianToolRouter batch routing failed. Triggering fail-safe fallback.")
+            await self._call_telemetry(
+                "route_batch_failure",
+                e,
+                {
+                    "contexts": contexts,
+                    "candidate_tools": candidate_tools,
+                },
+            )
+
+            fallback_choice = self.fallback_tool if (self.fallback_tool and self.fallback_tool in candidate_tools) else candidate_tools[0]
+            fallback_trace_id = self._generate_trace_id("fallback_ctx", fallback_choice)
+            return [(fallback_choice, fallback_trace_id)] * len(contexts)
+
+    async def afeedback_batch(self, feedbacks: List[Dict[str, Any]]) -> None:
+        if not feedbacks:
+            return
+
+        await self._ensure_initialized()
+
+        try:
+            contexts_to_embed = []
+            contexts_to_embed_indices = []
+            prepared_feedbacks = []
+            
+            for fb in feedbacks:
+                success = fb.get("success")
+                reward = fb.get("reward")
+                
+                if success is None and reward is None:
+                    raise ValueError("Either 'success' or 'reward' must be provided in feedback.")
+                if success is not None and reward is not None:
+                    expected_reward = 1.0 if success else 0.0
+                    if reward != expected_reward:
+                        raise ValueError(
+                            f"Conflicting feedback: success={success} and reward={reward}."
+                        )
+                
+                reward_val = float(reward) if reward is not None else (1.0 if success else 0.0)
+                
+                trace_id = fb.get("trace_id")
+                if trace_id is not None:
+                    context_key, tool_name = self._decode_trace_id(trace_id)
+                    prepared_feedbacks.append({
+                        "type": "trace",
+                        "context_key": context_key,
+                        "tool_name": tool_name,
+                        "reward_val": reward_val,
+                    })
+                else:
+                    context_text = fb.get("context_text")
+                    tool_name = fb.get("tool_name")
+                    if not context_text or not tool_name:
+                        raise ValueError("Feedback must contain either 'trace_id' or both 'context_text' and 'tool_name'.")
+                    
+                    prepared_feedbacks.append({
+                        "type": "text",
+                        "context_text": context_text,
+                        "tool_name": tool_name,
+                        "reward_val": reward_val,
+                    })
+                    contexts_to_embed.append(context_text)
+                    contexts_to_embed_indices.append(len(prepared_feedbacks) - 1)
+
+            if contexts_to_embed:
+                resolved_keys = await self._resolve_context_keys(contexts_to_embed)
+                for idx, key in zip(contexts_to_embed_indices, resolved_keys):
+                    prepared_feedbacks[idx]["context_key"] = key
+                    
+                if self.mode != "clustering":
+                    if hasattr(self.embedder, "aembed_queries"):
+                        vectors = await self.embedder.aembed_queries(contexts_to_embed)
+                    elif hasattr(self.embedder, "embed_queries"):
+                        vectors = self.embedder.embed_queries(contexts_to_embed)
+                    elif hasattr(self.embedder, "aembed_query"):
+                        vectors = await asyncio.gather(*(self.embedder.aembed_query(t) for t in contexts_to_embed))
+                    else:
+                        vectors = [self.embedder.embed_query(t) for t in contexts_to_embed]
+                    for idx, vector in zip(contexts_to_embed_indices, vectors):
+                        prepared_feedbacks[idx]["vector"] = vector
+
+            if self.mode == "clustering":
+                updates = []
+                for fb in prepared_feedbacks:
+                    updates.append((fb["context_key"], fb["tool_name"], self.decay_factor, fb["reward_val"]))
+                await self.storage.decay_and_update_batch(updates)
+            else:
+                updates = []
+                for fb in prepared_feedbacks:
+                    tool_name = fb["tool_name"]
+                    reward_val = fb["reward_val"]
+                    
+                    if fb["type"] == "trace":
+                        x_seq = await self._context_store.aget_context_vector(fb["context_key"])
+                        if x_seq is None:
+                            logger.warning(
+                                f"Context vector not found for key {fb['context_key']}. Using zero vector as fallback."
+                            )
+                            d = 384
+                            precision, _ = await self.storage.aget_linear_params(tool_name)
+                            if precision is not None:
+                                d = len(precision) - 1
+                            x = np.zeros(d, dtype=np.float32)
+                        else:
+                            x = np.array(x_seq, dtype=np.float32)
+                    else:
+                        x = np.array(fb["vector"], dtype=np.float32)
+                    
+                    x_augmented = np.append(x, 1.0)
+                    
+                    if tool_name in self.priors:
+                        alpha, beta = self.priors[tool_name]
+                        prior_p = alpha / (alpha + beta)
+                    else:
+                        prior_p = 0.5
+                        
+                    updates.append((tool_name, self.decay_factor, reward_val, x_augmented, self.lambda_val, prior_p, self.diagonal_covariance))
+                    
+                await self.storage.adecay_and_update_linear_batch(updates)
+
+        except Exception as e:
+            logger.exception("AsyncBayesianToolRouter batch feedback submission failed.")
+            await self._call_telemetry("feedback_batch_failure", e, {"feedbacks": feedbacks})
+
 

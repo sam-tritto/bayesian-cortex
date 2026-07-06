@@ -16,6 +16,10 @@ class ContextEmbedder(Protocol):
         """Convert a text query (prompt) into a vector of floats."""
         ...
 
+    def embed_queries(self, texts: List[str]) -> List[Sequence[float]]:
+        """Convert multiple text queries into vectors of floats."""
+        ...
+
 
 class AsyncContextEmbedder(Protocol):
     """Protocol defining how to convert text into a vector context key asynchronously."""
@@ -23,6 +27,11 @@ class AsyncContextEmbedder(Protocol):
     async def aembed_query(self, text: str) -> Sequence[float]:
         """Convert a text query (prompt) into a vector of floats."""
         ...
+
+    async def aembed_queries(self, texts: List[str]) -> List[Sequence[float]]:
+        """Convert multiple text queries into vectors of floats asynchronously."""
+        ...
+
 
 
 class VectorStoreProtocol(Protocol):
@@ -76,6 +85,15 @@ class LocalSentenceTransformerEmbedder:
     async def aembed_query(self, text: str) -> Sequence[float]:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self.embed_query, text)
+
+    def embed_queries(self, texts: List[str]) -> List[Sequence[float]]:
+        embeddings = self.model.encode(texts)
+        return [[float(x) for x in emb] for emb in embeddings]
+
+    async def aembed_queries(self, texts: List[str]) -> List[Sequence[float]]:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.embed_queries, texts)
+
 
 
 class GeminiEmbedder:
@@ -240,6 +258,117 @@ class GeminiEmbedder:
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with Gemini API: {e}") from e
 
+    def embed_queries(self, texts: List[str]) -> List[Sequence[float]]:
+        if not texts:
+            return []
+        if self.client is not None:
+            try:
+                if hasattr(self.client, "models") and hasattr(self.client.models, "embed_content"):
+                    resp = self.client.models.embed_content(model=self.model_name, contents=texts)
+                    if hasattr(resp, "embeddings"):
+                        return [[float(x) for x in emb.values] for emb in resp.embeddings]
+            except Exception:
+                pass
+            return [self.embed_query(t) for t in texts]
+
+        if not self.api_key:
+            raise ValueError(
+                "Gemini API key is required. Pass it via api_key or set the GEMINI_API_KEY environment variable."
+            )
+
+        model = self.model_name
+        if not model.startswith("models/") and not model.startswith("tunedModels/"):
+            model = f"models/{model}"
+
+        url = f"{self.base_url}/{self.api_version}/{model}:batchEmbedContents?key={self.api_key}"
+        payload = {
+            "requests": [
+                {
+                    "model": model,
+                    "content": {"parts": [{"text": text}]}
+                }
+                for text in texts
+            ]
+        }
+        
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                resp_data = json.loads(response.read().decode("utf-8"))
+                if "embeddings" in resp_data:
+                    return [[float(x) for x in emb["values"]] for emb in resp_data["embeddings"]]
+                raise ValueError(f"Unexpected response structure from Gemini API: {resp_data}")
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8")
+            raise RuntimeError(f"Gemini API request failed with status {e.code}: {err_body}") from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to communicate with Gemini API: {e}") from e
+
+    async def aembed_queries(self, texts: List[str]) -> List[Sequence[float]]:
+        if not texts:
+            return []
+        if self.client is not None:
+            try:
+                if hasattr(self.client, "aio") and hasattr(self.client.aio, "models") and hasattr(self.client.aio.models, "embed_content"):
+                    resp = await self.client.aio.models.embed_content(model=self.model_name, contents=texts)
+                    if hasattr(resp, "embeddings"):
+                        return [[float(x) for x in emb.values] for emb in resp.embeddings]
+            except Exception:
+                pass
+            return await asyncio.gather(*(self.aembed_query(t) for t in texts))
+
+        if not self.api_key:
+            raise ValueError(
+                "Gemini API key is required. Pass it via api_key or set the GEMINI_API_KEY environment variable."
+            )
+
+        model = self.model_name
+        if not model.startswith("models/") and not model.startswith("tunedModels/"):
+            model = f"models/{model}"
+
+        url = f"{self.base_url}/{self.api_version}/{model}:batchEmbedContents?key={self.api_key}"
+        payload = {
+            "requests": [
+                {
+                    "model": model,
+                    "content": {"parts": [{"text": text}]}
+                }
+                for text in texts
+            ]
+        }
+        
+        try:
+            import httpx
+        except ImportError:
+            raise ImportError(
+                "httpx is required for async embedding calls. "
+                "Please install it with: pip install httpx"
+            )
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as httpx_client:
+                response = await httpx_client.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"}
+                )
+                response.raise_for_status()
+                resp_data = response.json()
+                if "embeddings" in resp_data:
+                    return [[float(x) for x in emb["values"]] for emb in resp_data["embeddings"]]
+                raise ValueError(f"Unexpected response structure from Gemini API: {resp_data}")
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"Gemini API request failed with status {e.response.status_code}: {e.response.text}") from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to communicate with Gemini API: {e}") from e
+
+
 
 class OpenAIEmbedder:
     """
@@ -364,6 +493,106 @@ class OpenAIEmbedder:
             raise RuntimeError(f"OpenAI API request failed with status {e.response.status_code}: {e.response.text}") from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with OpenAI API: {e}") from e
+
+    def embed_queries(self, texts: List[str]) -> List[Sequence[float]]:
+        if not texts:
+            return []
+        if self.client is not None:
+            if hasattr(self.client, "embeddings") and hasattr(self.client.embeddings, "create"):
+                resp = self.client.embeddings.create(input=texts, model=self.model_name)
+                if hasattr(resp, "data"):
+                    sorted_data = sorted(resp.data, key=lambda x: getattr(x, "index", 0))
+                    return [[float(x) for x in item.embedding] for item in sorted_data]
+            raise ValueError("Provided client does not have embeddings.create method or expected structure.")
+
+        if not self.api_key:
+            raise ValueError(
+                "OpenAI API key is required. Pass it via api_key or set the OPENAI_API_KEY environment variable."
+            )
+
+        url = f"{self.base_url}/embeddings"
+        payload = {
+            "input": texts,
+            "model": self.model_name,
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                resp_data = json.loads(response.read().decode("utf-8"))
+                if "data" in resp_data:
+                    sorted_data = sorted(resp_data["data"], key=lambda x: x.get("index", 0))
+                    return [[float(x) for x in item["embedding"]] for item in sorted_data]
+                raise ValueError(f"Unexpected response structure from OpenAI API: {resp_data}")
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8")
+            raise RuntimeError(f"OpenAI API request failed with status {e.code}: {err_body}") from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to communicate with OpenAI API: {e}") from e
+
+    async def aembed_queries(self, texts: List[str]) -> List[Sequence[float]]:
+        if not texts:
+            return []
+        if self.client is not None:
+            if hasattr(self.client, "embeddings") and hasattr(self.client.embeddings, "create"):
+                func = self.client.embeddings.create
+                if asyncio.iscoroutinefunction(func):
+                    resp = await func(input=texts, model=self.model_name)
+                else:
+                    resp = func(input=texts, model=self.model_name)
+                if hasattr(resp, "data"):
+                    sorted_data = sorted(resp.data, key=lambda x: getattr(x, "index", 0))
+                    return [[float(x) for x in item.embedding] for item in sorted_data]
+            raise ValueError("Provided client does not have embeddings.create method or expected structure.")
+
+        if not self.api_key:
+            raise ValueError(
+                "OpenAI API key is required. Pass it via api_key or set the OPENAI_API_KEY environment variable."
+            )
+
+        url = f"{self.base_url}/embeddings"
+        payload = {
+            "input": texts,
+            "model": self.model_name,
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+        try:
+            import httpx
+        except ImportError:
+            raise ImportError(
+                "httpx is required for async embedding calls. "
+                "Please install it with: pip install httpx"
+            )
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as httpx_client:
+                response = await httpx_client.post(
+                    url,
+                    json=payload,
+                    headers=headers
+                )
+                response.raise_for_status()
+                resp_data = response.json()
+                if "data" in resp_data:
+                    sorted_data = sorted(resp_data["data"], key=lambda x: x.get("index", 0))
+                    return [[float(x) for x in item["embedding"]] for item in sorted_data]
+                raise ValueError(f"Unexpected response structure from OpenAI API: {resp_data}")
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"OpenAI API request failed with status {e.response.status_code}: {e.response.text}") from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to communicate with OpenAI API: {e}") from e
+
 
 
 class VectorContextStore:

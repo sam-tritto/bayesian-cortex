@@ -111,6 +111,65 @@ class BaseStorage(abc.ABC):
         """
         pass
 
+    def get_tool_params_batch(
+        self, keys: List[Tuple[str, str]]
+    ) -> Dict[Tuple[str, str], Tuple[float, float]]:
+        """
+        Batch retrieve the (alpha, beta) posterior parameters for a list of context and tool keys.
+        """
+        return {key: self.get_tool_params(key[0], key[1]) for key in keys}
+
+    def update_tool_params_batch(
+        self, params: Dict[Tuple[str, str], Tuple[float, float]]
+    ) -> None:
+        """
+        Batch set the (alpha, beta) parameters.
+        """
+        for (ctx, tool), (alpha, beta) in params.items():
+            self.update_tool_params(ctx, tool, alpha, beta)
+
+    def decay_and_update_batch(
+        self, updates: List[Tuple[str, str, float, float]]
+    ) -> List[Tuple[float, float]]:
+        """
+        Batch decay and update parameters in order.
+        Each update is (context_key, tool_name, decay_factor, reward).
+        """
+        return [self.decay_and_update(ctx, tool, decay, reward) for ctx, tool, decay, reward in updates]
+
+    def get_linear_params_batch(
+        self, tool_names: List[str]
+    ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+        """
+        Batch retrieve (precision, reward_vector) for multiple tools.
+        """
+        results = {}
+        for t in tool_names:
+            val = self.get_linear_params(t)
+            if val[0] is not None and val[1] is not None:
+                results[t] = val
+        return results
+
+    def decay_and_update_linear_batch(
+        self, updates: List[Tuple[str, float, float, np.ndarray, float, float, bool]]
+    ) -> List[Tuple[np.ndarray, np.ndarray]]:
+        """
+        Batch decay and update linear parameters in order.
+        Each update is (tool_name, decay_factor, reward, x_augmented, lambda_val, prior_p, diagonal).
+        """
+        return [
+            self.decay_and_update_linear(tool, decay, reward, x_aug, lamb, prior, diag)
+            for tool, decay, reward, x_aug, lamb, prior, diag in updates
+        ]
+
+    def save_vectors(self, vectors: Dict[str, Sequence[float]]) -> None:
+        """
+        Batch store context vectors incrementally.
+        """
+        for key, vector in vectors.items():
+            self.save_vector(key, vector)
+
+
 
 class InMemoryStorage(BaseStorage):
     """
@@ -214,6 +273,78 @@ class InMemoryStorage(BaseStorage):
 
             self._linear_data[tool_name] = (new_precision, new_reward_vector)
             return np.copy(new_precision), np.copy(new_reward_vector)
+
+    def get_tool_params_batch(
+        self, keys: List[Tuple[str, str]]
+    ) -> Dict[Tuple[str, str], Tuple[float, float]]:
+        with self._lock:
+            return {key: self._data.get(key, (1.0, 1.0)) for key in keys}
+
+    def update_tool_params_batch(
+        self, params: Dict[Tuple[str, str], Tuple[float, float]]
+    ) -> None:
+        with self._lock:
+            for key, val in params.items():
+                self._data[key] = val
+
+    def decay_and_update_batch(
+        self, updates: List[Tuple[str, str, float, float]]
+    ) -> List[Tuple[float, float]]:
+        with self._lock:
+            results = []
+            for context_key, tool_name, decay_factor, reward in updates:
+                alpha, beta = self._data.get((context_key, tool_name), (1.0, 1.0))
+                new_alpha = max(1.0, alpha * decay_factor + reward)
+                new_beta = max(1.0, beta * decay_factor + (1.0 - reward))
+                self._data[(context_key, tool_name)] = (new_alpha, new_beta)
+                results.append((new_alpha, new_beta))
+            return results
+
+    def get_linear_params_batch(
+        self, tool_names: List[str]
+    ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+        with self._lock:
+            results = {}
+            for t in tool_names:
+                val = self._linear_data.get(t)
+                if val is not None:
+                    results[t] = (np.copy(val[0]), np.copy(val[1]))
+            return results
+
+    def decay_and_update_linear_batch(
+        self, updates: List[Tuple[str, float, float, np.ndarray, float, float, bool]]
+    ) -> List[Tuple[np.ndarray, np.ndarray]]:
+        with self._lock:
+            results = []
+            for tool_name, decay_factor, reward, x_augmented, lambda_val, prior_p, diagonal in updates:
+                d = len(x_augmented)
+                val = self._linear_data.get(tool_name)
+                if val is not None:
+                    precision, reward_vector = val
+                else:
+                    precision = lambda_val * np.ones(d, dtype=np.float32) if diagonal else lambda_val * np.eye(d, dtype=np.float32)
+                    reward_vector = np.zeros(d, dtype=np.float32)
+                    reward_vector[-1] = lambda_val * prior_p
+
+                prior_reward_vector = np.zeros(d, dtype=np.float32)
+                prior_reward_vector[-1] = lambda_val * prior_p
+
+                if diagonal:
+                    new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32) + (x_augmented ** 2)
+                else:
+                    new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32) + np.outer(x_augmented, x_augmented)
+
+                new_reward_vector = decay_factor * reward_vector + (1.0 - decay_factor) * prior_reward_vector + reward * x_augmented
+
+                self._linear_data[tool_name] = (new_precision, new_reward_vector)
+                results.append((np.copy(new_precision), np.copy(new_reward_vector)))
+            return results
+
+    def save_vectors(self, vectors: Dict[str, Sequence[float]]) -> None:
+        with self._lock:
+            for key, vector in vectors.items():
+                self._vectors[key] = list(vector)
+
 
 
 class SQLiteStorage(BaseStorage):
@@ -482,6 +613,198 @@ class SQLiteStorage(BaseStorage):
             conn.rollback()
             raise e
 
+    def get_tool_params_batch(
+        self, keys: List[Tuple[str, str]]
+    ) -> Dict[Tuple[str, str], Tuple[float, float]]:
+        if not keys:
+            return {}
+        results = {key: (1.0, 1.0) for key in keys}
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        chunk_size = 200
+        for i in range(0, len(keys), chunk_size):
+            chunk = keys[i:i+chunk_size]
+            clauses = []
+            params = []
+            for c_key, t_name in chunk:
+                clauses.append("(context_key = ? AND tool_name = ?)")
+                params.extend([c_key, t_name])
+            query = "SELECT context_key, tool_name, alpha, beta FROM tool_params WHERE " + " OR ".join(clauses)
+            cursor.execute(query, params)
+            for row in cursor.fetchall():
+                results[(row[0], row[1])] = (float(row[2]), float(row[3]))
+        return results
+
+    def update_tool_params_batch(
+        self, params: Dict[Tuple[str, str], Tuple[float, float]]
+    ) -> None:
+        if not params:
+            return
+        conn = self._get_conn()
+        with conn:
+            conn.executemany(
+                """
+                INSERT INTO tool_params (context_key, tool_name, alpha, beta)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(context_key, tool_name) DO UPDATE SET
+                    alpha = excluded.alpha,
+                    beta = excluded.beta
+                """,
+                [(ctx, tool, alpha, beta) for (ctx, tool), (alpha, beta) in params.items()]
+            )
+
+    def decay_and_update_batch(
+        self, updates: List[Tuple[str, str, float, float]]
+    ) -> List[Tuple[float, float]]:
+        if not updates:
+            return []
+        
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
+            
+            keys = [(ctx, tool) for ctx, tool, _, _ in updates]
+            current_vals = {}
+            chunk_size = 200
+            for i in range(0, len(keys), chunk_size):
+                chunk = keys[i:i+chunk_size]
+                clauses = []
+                params = []
+                for c_key, t_name in chunk:
+                    clauses.append("(context_key = ? AND tool_name = ?)")
+                    params.extend([c_key, t_name])
+                query = "SELECT context_key, tool_name, alpha, beta FROM tool_params WHERE " + " OR ".join(clauses)
+                cursor.execute(query, params)
+                for row in cursor.fetchall():
+                    current_vals[(row[0], row[1])] = (float(row[2]), float(row[3]))
+            
+            updated_params = []
+            for ctx, tool, decay_factor, reward in updates:
+                alpha, beta = current_vals.get((ctx, tool), (1.0, 1.0))
+                new_alpha = max(1.0, alpha * decay_factor + reward)
+                new_beta = max(1.0, beta * decay_factor + (1.0 - reward))
+                current_vals[(ctx, tool)] = (new_alpha, new_beta)
+                updated_params.append((ctx, tool, new_alpha, new_beta))
+            
+            cursor.executemany(
+                """
+                INSERT INTO tool_params (context_key, tool_name, alpha, beta)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(context_key, tool_name) DO UPDATE SET
+                    alpha = excluded.alpha,
+                    beta = excluded.beta
+                """,
+                [(ctx, tool, val[0], val[1]) for (ctx, tool), val in current_vals.items()]
+            )
+            
+            conn.commit()
+            return [(item[2], item[3]) for item in updated_params]
+        except Exception as e:
+            conn.rollback()
+            raise e
+
+    def get_linear_params_batch(
+        self, tool_names: List[str]
+    ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+        if not tool_names:
+            return {}
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        placeholders = ",".join(["?"] * len(tool_names))
+        cursor.execute(
+            f"SELECT tool_name, precision_matrix, reward_vector FROM linear_bandit_params WHERE tool_name IN ({placeholders})",
+            tool_names,
+        )
+        results = {}
+        for row in cursor.fetchall():
+            precision = np.array(json.loads(row[1]), dtype=np.float32)
+            reward_vector = np.array(json.loads(row[2]), dtype=np.float32)
+            results[row[0]] = (precision, reward_vector)
+        return results
+
+    def decay_and_update_linear_batch(
+        self, updates: List[Tuple[str, float, float, np.ndarray, float, float, bool]]
+    ) -> List[Tuple[np.ndarray, np.ndarray]]:
+        if not updates:
+            return []
+        
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
+            
+            tool_names = list(set([item[0] for item in updates]))
+            current_vals = {}
+            if tool_names:
+                placeholders = ",".join(["?"] * len(tool_names))
+                query = f"SELECT tool_name, precision_matrix, reward_vector FROM linear_bandit_params WHERE tool_name IN ({placeholders})"
+                cursor.execute(query, tool_names)
+                for row in cursor.fetchall():
+                    precision = np.array(json.loads(row[1]), dtype=np.float32)
+                    reward_vector = np.array(json.loads(row[2]), dtype=np.float32)
+                    current_vals[row[0]] = (precision, reward_vector)
+            
+            results = []
+            for tool_name, decay_factor, reward, x_augmented, lambda_val, prior_p, diagonal in updates:
+                d = len(x_augmented)
+                val = current_vals.get(tool_name)
+                if val is not None:
+                    precision, reward_vector = val
+                else:
+                    precision = lambda_val * np.ones(d, dtype=np.float32) if diagonal else lambda_val * np.eye(d, dtype=np.float32)
+                    reward_vector = np.zeros(d, dtype=np.float32)
+                    reward_vector[-1] = lambda_val * prior_p
+
+                prior_reward_vector = np.zeros(d, dtype=np.float32)
+                prior_reward_vector[-1] = lambda_val * prior_p
+
+                if diagonal:
+                    new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32) + (x_augmented ** 2)
+                else:
+                    new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32) + np.outer(x_augmented, x_augmented)
+
+                new_reward_vector = decay_factor * reward_vector + (1.0 - decay_factor) * prior_reward_vector + reward * x_augmented
+
+                current_vals[tool_name] = (new_precision, new_reward_vector)
+                results.append((np.copy(new_precision), np.copy(new_reward_vector)))
+            
+            db_updates = []
+            for t_name, (prec, rew) in current_vals.items():
+                db_updates.append((t_name, json.dumps(prec.tolist()), json.dumps(rew.tolist())))
+            
+            cursor.executemany(
+                """
+                INSERT INTO linear_bandit_params (tool_name, precision_matrix, reward_vector)
+                VALUES (?, ?, ?)
+                ON CONFLICT(tool_name) DO UPDATE SET
+                    precision_matrix = excluded.precision_matrix,
+                    reward_vector = excluded.reward_vector
+                """,
+                db_updates
+            )
+            
+            conn.commit()
+            return results
+        except Exception as e:
+            conn.rollback()
+            raise e
+
+    def save_vectors(self, vectors: Dict[str, Sequence[float]]) -> None:
+        if not vectors:
+            return
+        conn = self._get_conn()
+        with conn:
+            conn.executemany(
+                """
+                INSERT INTO context_vectors (context_key, vector)
+                VALUES (?, ?)
+                ON CONFLICT(context_key) DO UPDATE SET vector = excluded.vector
+                """,
+                [(k, json.dumps(list(v))) for k, v in vectors.items()]
+            )
+
+
 
 class RedisStorage(BaseStorage):
     """
@@ -657,6 +980,162 @@ class RedisStorage(BaseStorage):
             except redis.WatchError:
                 continue
 
+    def get_tool_params_batch(
+        self, keys: List[Tuple[str, str]]
+    ) -> Dict[Tuple[str, str], Tuple[float, float]]:
+        if not keys:
+            return {}
+        pipe = self.client.pipeline()
+        for context_key, tool_name in keys:
+            key = self._get_key(context_key)
+            pipe.hget(key, f"{tool_name}:alpha")
+            pipe.hget(key, f"{tool_name}:beta")
+        
+        results_raw = pipe.execute()
+        results = {}
+        for idx, (context_key, tool_name) in enumerate(keys):
+            alpha_val = results_raw[2 * idx]
+            beta_val = results_raw[2 * idx + 1]
+            alpha = float(alpha_val) if alpha_val is not None else 1.0
+            beta = float(beta_val) if beta_val is not None else 1.0
+            results[(context_key, tool_name)] = (alpha, beta)
+        return results
+
+    def update_tool_params_batch(
+        self, params: Dict[Tuple[str, str], Tuple[float, float]]
+    ) -> None:
+        if not params:
+            return
+        pipe = self.client.pipeline()
+        for (context_key, tool_name), (alpha, beta) in params.items():
+            key = self._get_key(context_key)
+            pipe.hset(
+                key,
+                mapping={
+                    f"{tool_name}:alpha": str(alpha),
+                    f"{tool_name}:beta": str(beta),
+                },
+            )
+        pipe.execute()
+
+    def decay_and_update_batch(
+        self, updates: List[Tuple[str, str, float, float]]
+    ) -> List[Tuple[float, float]]:
+        if not updates:
+            return []
+        pipe = self.client.pipeline()
+        for context_key, tool_name, decay_factor, reward in updates:
+            key = self._get_key(context_key)
+            self._script(
+                keys=[key],
+                args=[
+                    f"{tool_name}:alpha",
+                    f"{tool_name}:beta",
+                    str(decay_factor),
+                    str(reward),
+                ],
+                client=pipe,
+            )
+        raw_results = pipe.execute()
+        return [(float(res[0]), float(res[1])) for res in raw_results]
+
+    def get_linear_params_batch(
+        self, tool_names: List[str]
+    ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+        if not tool_names:
+            return {}
+        pipe = self.client.pipeline()
+        for t in tool_names:
+            pipe.get(f"{self.prefix}linear:{t}:precision")
+            pipe.get(f"{self.prefix}linear:{t}:reward")
+        raw_vals = pipe.execute()
+        results = {}
+        for idx, t in enumerate(tool_names):
+            prec_val = raw_vals[2 * idx]
+            rew_val = raw_vals[2 * idx + 1]
+            if prec_val is not None and rew_val is not None:
+                precision = np.array(json.loads(prec_val), dtype=np.float32)
+                reward_vector = np.array(json.loads(rew_val), dtype=np.float32)
+                results[t] = (precision, reward_vector)
+        return results
+
+    def decay_and_update_linear_batch(
+        self, updates: List[Tuple[str, float, float, np.ndarray, float, float, bool]]
+    ) -> List[Tuple[np.ndarray, np.ndarray]]:
+        if not updates:
+            return []
+        import redis
+        tool_names = list(set([item[0] for item in updates]))
+        keys_prec = [f"{self.prefix}linear:{t}:precision" for t in tool_names]
+        keys_rew = [f"{self.prefix}linear:{t}:reward" for t in tool_names]
+        all_keys = keys_prec + keys_rew
+        
+        pipe = self.client.pipeline()
+        while True:
+            try:
+                pipe.watch(*all_keys)
+                for k in keys_prec:
+                    pipe.get(k)
+                for k in keys_rew:
+                    pipe.get(k)
+                raw_vals = pipe.execute()
+                
+                current_vals = {}
+                num_tools = len(tool_names)
+                for idx, t in enumerate(tool_names):
+                    prec_val = raw_vals[idx]
+                    rew_val = raw_vals[num_tools + idx]
+                    if prec_val is not None and rew_val is not None:
+                        precision = np.array(json.loads(prec_val), dtype=np.float32)
+                        reward_vector = np.array(json.loads(rew_val), dtype=np.float32)
+                        current_vals[t] = (precision, reward_vector)
+                
+                results = []
+                for tool_name, decay_factor, reward, x_augmented, lambda_val, prior_p, diagonal in updates:
+                    d = len(x_augmented)
+                    val = current_vals.get(tool_name)
+                    if val is not None:
+                        precision, reward_vector = val
+                    else:
+                        precision = lambda_val * np.ones(d, dtype=np.float32) if diagonal else lambda_val * np.eye(d, dtype=np.float32)
+                        reward_vector = np.zeros(d, dtype=np.float32)
+                        reward_vector[-1] = lambda_val * prior_p
+
+                    prior_reward_vector = np.zeros(d, dtype=np.float32)
+                    prior_reward_vector[-1] = lambda_val * prior_p
+
+                    if diagonal:
+                        new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32) + (x_augmented ** 2)
+                    else:
+                        new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32) + np.outer(x_augmented, x_augmented)
+
+                    new_reward_vector = decay_factor * reward_vector + (1.0 - decay_factor) * prior_reward_vector + reward * x_augmented
+
+                    current_vals[tool_name] = (new_precision, new_reward_vector)
+                    results.append((np.copy(new_precision), np.copy(new_reward_vector)))
+                
+                pipe.multi()
+                for t, (prec, rew) in current_vals.items():
+                    pipe.set(f"{self.prefix}linear:{t}:precision", json.dumps(prec.tolist()))
+                    pipe.set(f"{self.prefix}linear:{t}:reward", json.dumps(rew.tolist()))
+                pipe.execute()
+                return results
+            except redis.WatchError:
+                continue
+
+    def save_vectors(self, vectors: Dict[str, Sequence[float]]) -> None:
+        if not vectors:
+            return
+        pipe = self.client.pipeline()
+        for k, v in vectors.items():
+            pipe.hset(
+                f"{self.prefix}context_vectors",
+                key=k,
+                value=json.dumps(list(v))
+            )
+        pipe.execute()
+
+
 
 class AsyncBaseStorage(abc.ABC):
     """Abstract base class defining the async storage backend interface for BayesBrain."""
@@ -762,6 +1241,71 @@ class AsyncBaseStorage(abc.ABC):
         """
         pass
 
+    async def get_tool_params_batch(
+        self, keys: List[Tuple[str, str]]
+    ) -> Dict[Tuple[str, str], Tuple[float, float]]:
+        """
+        Batch retrieve the (alpha, beta) posterior parameters for a list of context and tool keys.
+        """
+        res = {}
+        for key in keys:
+            res[key] = await self.get_tool_params(key[0], key[1])
+        return res
+
+    async def update_tool_params_batch(
+        self, params: Dict[Tuple[str, str], Tuple[float, float]]
+    ) -> None:
+        """
+        Batch set the (alpha, beta) parameters.
+        """
+        for (ctx, tool), (alpha, beta) in params.items():
+            await self.update_tool_params(ctx, tool, alpha, beta)
+
+    async def decay_and_update_batch(
+        self, updates: List[Tuple[str, str, float, float]]
+    ) -> List[Tuple[float, float]]:
+        """
+        Batch decay and update parameters in order.
+        Each update is (context_key, tool_name, decay_factor, reward).
+        """
+        res = []
+        for ctx, tool, decay, reward in updates:
+            res.append(await self.decay_and_update(ctx, tool, decay, reward))
+        return res
+
+    async def aget_linear_params_batch(
+        self, tool_names: List[str]
+    ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+        """
+        Batch retrieve (precision, reward_vector) for multiple tools.
+        """
+        results = {}
+        for t in tool_names:
+            val = await self.aget_linear_params(t)
+            if val[0] is not None and val[1] is not None:
+                results[t] = val
+        return results
+
+    async def adecay_and_update_linear_batch(
+        self, updates: List[Tuple[str, float, float, np.ndarray, float, float, bool]]
+    ) -> List[Tuple[np.ndarray, np.ndarray]]:
+        """
+        Batch decay and update linear parameters in order.
+        Each update is (tool_name, decay_factor, reward, x_augmented, lambda_val, prior_p, diagonal).
+        """
+        res = []
+        for tool, decay, reward, x_aug, lamb, prior, diag in updates:
+            res.append(await self.adecay_and_update_linear(tool, decay, reward, x_aug, lamb, prior, diag))
+        return res
+
+    async def asave_vectors(self, vectors: Dict[str, Sequence[float]]) -> None:
+        """
+        Batch store context vectors incrementally.
+        """
+        for key, vector in vectors.items():
+            await self.save_vector(key, vector)
+
+
 
 class AsyncInMemoryStorage(AsyncBaseStorage):
     """
@@ -864,6 +1408,78 @@ class AsyncInMemoryStorage(AsyncBaseStorage):
 
             self._linear_data[tool_name] = (new_precision, new_reward_vector)
             return np.copy(new_precision), np.copy(new_reward_vector)
+
+    async def get_tool_params_batch(
+        self, keys: List[Tuple[str, str]]
+    ) -> Dict[Tuple[str, str], Tuple[float, float]]:
+        async with self._lock:
+            return {key: self._data.get(key, (1.0, 1.0)) for key in keys}
+
+    async def update_tool_params_batch(
+        self, params: Dict[Tuple[str, str], Tuple[float, float]]
+    ) -> None:
+        async with self._lock:
+            for key, val in params.items():
+                self._data[key] = val
+
+    async def decay_and_update_batch(
+        self, updates: List[Tuple[str, str, float, float]]
+    ) -> List[Tuple[float, float]]:
+        async with self._lock:
+            results = []
+            for context_key, tool_name, decay_factor, reward in updates:
+                alpha, beta = self._data.get((context_key, tool_name), (1.0, 1.0))
+                new_alpha = max(1.0, alpha * decay_factor + reward)
+                new_beta = max(1.0, beta * decay_factor + (1.0 - reward))
+                self._data[(context_key, tool_name)] = (new_alpha, new_beta)
+                results.append((new_alpha, new_beta))
+            return results
+
+    async def aget_linear_params_batch(
+        self, tool_names: List[str]
+    ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+        async with self._lock:
+            results = {}
+            for t in tool_names:
+                val = self._linear_data.get(t)
+                if val is not None:
+                    results[t] = (np.copy(val[0]), np.copy(val[1]))
+            return results
+
+    async def adecay_and_update_linear_batch(
+        self, updates: List[Tuple[str, float, float, np.ndarray, float, float, bool]]
+    ) -> List[Tuple[np.ndarray, np.ndarray]]:
+        async with self._lock:
+            results = []
+            for tool_name, decay_factor, reward, x_augmented, lambda_val, prior_p, diagonal in updates:
+                d = len(x_augmented)
+                val = self._linear_data.get(tool_name)
+                if val is not None:
+                    precision, reward_vector = val
+                else:
+                    precision = lambda_val * np.ones(d, dtype=np.float32) if diagonal else lambda_val * np.eye(d, dtype=np.float32)
+                    reward_vector = np.zeros(d, dtype=np.float32)
+                    reward_vector[-1] = lambda_val * prior_p
+
+                prior_reward_vector = np.zeros(d, dtype=np.float32)
+                prior_reward_vector[-1] = lambda_val * prior_p
+
+                if diagonal:
+                    new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32) + (x_augmented ** 2)
+                else:
+                    new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32) + np.outer(x_augmented, x_augmented)
+
+                    new_reward_vector = decay_factor * reward_vector + (1.0 - decay_factor) * prior_reward_vector + reward * x_augmented
+
+                self._linear_data[tool_name] = (new_precision, new_reward_vector)
+                results.append((np.copy(new_precision), np.copy(new_reward_vector)))
+            return results
+
+    async def asave_vectors(self, vectors: Dict[str, Sequence[float]]) -> None:
+        async with self._lock:
+            for key, vector in vectors.items():
+                self._vectors[key] = list(vector)
+
 
 
 class AsyncSQLiteStorage(AsyncBaseStorage):
@@ -1128,6 +1744,199 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                 await conn.rollback()
                 raise e
 
+    async def get_tool_params_batch(
+        self, keys: List[Tuple[str, str]]
+    ) -> Dict[Tuple[str, str], Tuple[float, float]]:
+        if not keys:
+            return {}
+        results = {key: (1.0, 1.0) for key in keys}
+        conn = await self._get_conn()
+        chunk_size = 200
+        for i in range(0, len(keys), chunk_size):
+            chunk = keys[i:i+chunk_size]
+            clauses = []
+            params = []
+            for c_key, t_name in chunk:
+                clauses.append("(context_key = ? AND tool_name = ?)")
+                params.extend([c_key, t_name])
+            query = "SELECT context_key, tool_name, alpha, beta FROM tool_params WHERE " + " OR ".join(clauses)
+            async with conn.execute(query, params) as cursor:
+                rows = await cursor.fetchall()
+                for row in rows:
+                    results[(row[0], row[1])] = (float(row[2]), float(row[3]))
+        return results
+
+    async def update_tool_params_batch(
+        self, params: Dict[Tuple[str, str], Tuple[float, float]]
+    ) -> None:
+        if not params:
+            return
+        conn = await self._get_conn()
+        await conn.executemany(
+            """
+            INSERT INTO tool_params (context_key, tool_name, alpha, beta)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(context_key, tool_name) DO UPDATE SET
+                alpha = excluded.alpha,
+                beta = excluded.beta
+            """,
+            [(ctx, tool, alpha, beta) for (ctx, tool), (alpha, beta) in params.items()]
+        )
+        await conn.commit()
+
+    async def decay_and_update_batch(
+        self, updates: List[Tuple[str, str, float, float]]
+    ) -> List[Tuple[float, float]]:
+        if not updates:
+            return []
+        
+        conn = await self._get_conn()
+        async with self._lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                
+                keys = [(ctx, tool) for ctx, tool, _, _ in updates]
+                current_vals = {}
+                chunk_size = 200
+                for i in range(0, len(keys), chunk_size):
+                    chunk = keys[i:i+chunk_size]
+                    clauses = []
+                    params = []
+                    for c_key, t_name in chunk:
+                        clauses.append("(context_key = ? AND tool_name = ?)")
+                        params.extend([c_key, t_name])
+                    query = "SELECT context_key, tool_name, alpha, beta FROM tool_params WHERE " + " OR ".join(clauses)
+                    async with conn.execute(query, params) as cursor:
+                        rows = await cursor.fetchall()
+                        for row in rows:
+                            current_vals[(row[0], row[1])] = (float(row[2]), float(row[3]))
+                
+                updated_params = []
+                for ctx, tool, decay_factor, reward in updates:
+                    alpha, beta = current_vals.get((ctx, tool), (1.0, 1.0))
+                    new_alpha = max(1.0, alpha * decay_factor + reward)
+                    new_beta = max(1.0, beta * decay_factor + (1.0 - reward))
+                    current_vals[(ctx, tool)] = (new_alpha, new_beta)
+                    updated_params.append((ctx, tool, new_alpha, new_beta))
+                
+                db_updates = [(ctx, tool, val[0], val[1]) for (ctx, tool), val in current_vals.items()]
+                await conn.executemany(
+                    """
+                    INSERT INTO tool_params (context_key, tool_name, alpha, beta)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(context_key, tool_name) DO UPDATE SET
+                        alpha = excluded.alpha,
+                        beta = excluded.beta
+                    """,
+                    db_updates
+                )
+                await conn.commit()
+                return [(item[2], item[3]) for item in updated_params]
+            except Exception as e:
+                await conn.rollback()
+                raise e
+
+    async def aget_linear_params_batch(
+        self, tool_names: List[str]
+    ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+        if not tool_names:
+            return {}
+        conn = await self._get_conn()
+        placeholders = ",".join(["?"] * len(tool_names))
+        async with conn.execute(
+            f"SELECT tool_name, precision_matrix, reward_vector FROM linear_bandit_params WHERE tool_name IN ({placeholders})",
+            tool_names,
+        ) as cursor:
+            rows = await cursor.fetchall()
+        results = {}
+        for row in rows:
+            precision = np.array(json.loads(row[1]), dtype=np.float32)
+            reward_vector = np.array(json.loads(row[2]), dtype=np.float32)
+            results[row[0]] = (precision, reward_vector)
+        return results
+
+    async def adecay_and_update_linear_batch(
+        self, updates: List[Tuple[str, float, float, np.ndarray, float, float, bool]]
+    ) -> List[Tuple[np.ndarray, np.ndarray]]:
+        if not updates:
+            return []
+        
+        conn = await self._get_conn()
+        async with self._lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                
+                tool_names = list(set([item[0] for item in updates]))
+                current_vals = {}
+                if tool_names:
+                    placeholders = ",".join(["?"] * len(tool_names))
+                    query = f"SELECT tool_name, precision_matrix, reward_vector FROM linear_bandit_params WHERE tool_name IN ({placeholders})"
+                    async with conn.execute(query, tool_names) as cursor:
+                        rows = await cursor.fetchall()
+                        for row in rows:
+                            precision = np.array(json.loads(row[1]), dtype=np.float32)
+                            reward_vector = np.array(json.loads(row[2]), dtype=np.float32)
+                            current_vals[row[0]] = (precision, reward_vector)
+                
+                results = []
+                for tool_name, decay_factor, reward, x_augmented, lambda_val, prior_p, diagonal in updates:
+                    d = len(x_augmented)
+                    val = current_vals.get(tool_name)
+                    if val is not None:
+                        precision, reward_vector = val
+                    else:
+                        precision = lambda_val * np.ones(d, dtype=np.float32) if diagonal else lambda_val * np.eye(d, dtype=np.float32)
+                        reward_vector = np.zeros(d, dtype=np.float32)
+                        reward_vector[-1] = lambda_val * prior_p
+
+                    prior_reward_vector = np.zeros(d, dtype=np.float32)
+                    prior_reward_vector[-1] = lambda_val * prior_p
+
+                    if diagonal:
+                        new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32) + (x_augmented ** 2)
+                    else:
+                        new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32) + np.outer(x_augmented, x_augmented)
+
+                    new_reward_vector = decay_factor * reward_vector + (1.0 - decay_factor) * prior_reward_vector + reward * x_augmented
+
+                    current_vals[tool_name] = (new_precision, new_reward_vector)
+                    results.append((np.copy(new_precision), np.copy(new_reward_vector)))
+                
+                db_updates = []
+                for t_name, (prec, rew) in current_vals.items():
+                    db_updates.append((t_name, json.dumps(prec.tolist()), json.dumps(rew.tolist())))
+                
+                await conn.executemany(
+                    """
+                    INSERT INTO linear_bandit_params (tool_name, precision_matrix, reward_vector)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(tool_name) DO UPDATE SET
+                        precision_matrix = excluded.precision_matrix,
+                        reward_vector = excluded.reward_vector
+                    """,
+                    db_updates
+                )
+                await conn.commit()
+                return results
+            except Exception as e:
+                await conn.rollback()
+                raise e
+
+    async def asave_vectors(self, vectors: Dict[str, Sequence[float]]) -> None:
+        if not vectors:
+            return
+        conn = await self._get_conn()
+        await conn.executemany(
+            """
+            INSERT INTO context_vectors (context_key, vector)
+            VALUES (?, ?)
+            ON CONFLICT(context_key) DO UPDATE SET vector = excluded.vector
+            """,
+            [(k, json.dumps(list(v))) for k, v in vectors.items()]
+        )
+        await conn.commit()
+
+
 
 class AsyncRedisStorage(AsyncBaseStorage):
     """
@@ -1297,3 +2106,159 @@ class AsyncRedisStorage(AsyncBaseStorage):
                 return new_precision, new_reward_vector
             except redis.WatchError:
                 continue
+
+    async def get_tool_params_batch(
+        self, keys: List[Tuple[str, str]]
+    ) -> Dict[Tuple[str, str], Tuple[float, float]]:
+        if not keys:
+            return {}
+        pipe = self.client.pipeline()
+        for context_key, tool_name in keys:
+            key = self._get_key(context_key)
+            pipe.hget(key, f"{tool_name}:alpha")
+            pipe.hget(key, f"{tool_name}:beta")
+        
+        results_raw = await pipe.execute()
+        results = {}
+        for idx, (context_key, tool_name) in enumerate(keys):
+            alpha_val = results_raw[2 * idx]
+            beta_val = results_raw[2 * idx + 1]
+            alpha = float(alpha_val) if alpha_val is not None else 1.0
+            beta = float(beta_val) if beta_val is not None else 1.0
+            results[(context_key, tool_name)] = (alpha, beta)
+        return results
+
+    async def update_tool_params_batch(
+        self, params: Dict[Tuple[str, str], Tuple[float, float]]
+    ) -> None:
+        if not params:
+            return
+        pipe = self.client.pipeline()
+        for (context_key, tool_name), (alpha, beta) in params.items():
+            key = self._get_key(context_key)
+            pipe.hset(
+                key,
+                mapping={
+                    f"{tool_name}:alpha": str(alpha),
+                    f"{tool_name}:beta": str(beta),
+                },
+            )
+        await pipe.execute()
+
+    async def decay_and_update_batch(
+        self, updates: List[Tuple[str, str, float, float]]
+    ) -> List[Tuple[float, float]]:
+        if not updates:
+            return []
+        pipe = self.client.pipeline()
+        for context_key, tool_name, decay_factor, reward in updates:
+            key = self._get_key(context_key)
+            await self._script(
+                keys=[key],
+                args=[
+                    f"{tool_name}:alpha",
+                    f"{tool_name}:beta",
+                    str(decay_factor),
+                    str(reward),
+                ],
+                client=pipe,
+            )
+        raw_results = await pipe.execute()
+        return [(float(res[0]), float(res[1])) for res in raw_results]
+
+    async def aget_linear_params_batch(
+        self, tool_names: List[str]
+    ) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+        if not tool_names:
+            return {}
+        pipe = self.client.pipeline()
+        for t in tool_names:
+            pipe.get(f"{self.prefix}linear:{t}:precision")
+            pipe.get(f"{self.prefix}linear:{t}:reward")
+        raw_vals = await pipe.execute()
+        results = {}
+        for idx, t in enumerate(tool_names):
+            prec_val = raw_vals[2 * idx]
+            rew_val = raw_vals[2 * idx + 1]
+            if prec_val is not None and rew_val is not None:
+                precision = np.array(json.loads(prec_val), dtype=np.float32)
+                reward_vector = np.array(json.loads(rew_val), dtype=np.float32)
+                results[t] = (precision, reward_vector)
+        return results
+
+    async def adecay_and_update_linear_batch(
+        self, updates: List[Tuple[str, float, float, np.ndarray, float, float, bool]]
+    ) -> List[Tuple[np.ndarray, np.ndarray]]:
+        if not updates:
+            return []
+        import redis
+        tool_names = list(set([item[0] for item in updates]))
+        keys_prec = [f"{self.prefix}linear:{t}:precision" for t in tool_names]
+        keys_rew = [f"{self.prefix}linear:{t}:reward" for t in tool_names]
+        all_keys = keys_prec + keys_rew
+        
+        pipe = self.client.pipeline()
+        while True:
+            try:
+                await pipe.watch(*all_keys)
+                for k in keys_prec:
+                    pipe.get(k)
+                for k in keys_rew:
+                    pipe.get(k)
+                raw_vals = await pipe.execute()
+                
+                current_vals = {}
+                num_tools = len(tool_names)
+                for idx, t in enumerate(tool_names):
+                    prec_val = raw_vals[idx]
+                    rew_val = raw_vals[num_tools + idx]
+                    if prec_val is not None and rew_val is not None:
+                        precision = np.array(json.loads(prec_val), dtype=np.float32)
+                        reward_vector = np.array(json.loads(rew_val), dtype=np.float32)
+                        current_vals[t] = (precision, reward_vector)
+                
+                results = []
+                for tool_name, decay_factor, reward, x_augmented, lambda_val, prior_p, diagonal in updates:
+                    d = len(x_augmented)
+                    val = current_vals.get(tool_name)
+                    if val is not None:
+                        precision, reward_vector = val
+                    else:
+                        precision = lambda_val * np.ones(d, dtype=np.float32) if diagonal else lambda_val * np.eye(d, dtype=np.float32)
+                        reward_vector = np.zeros(d, dtype=np.float32)
+                        reward_vector[-1] = lambda_val * prior_p
+
+                    prior_reward_vector = np.zeros(d, dtype=np.float32)
+                    prior_reward_vector[-1] = lambda_val * prior_p
+
+                    if diagonal:
+                        new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32) + (x_augmented ** 2)
+                    else:
+                        new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32) + np.outer(x_augmented, x_augmented)
+
+                    new_reward_vector = decay_factor * reward_vector + (1.0 - decay_factor) * prior_reward_vector + reward * x_augmented
+
+                    current_vals[tool_name] = (new_precision, new_reward_vector)
+                    results.append((np.copy(new_precision), np.copy(new_reward_vector)))
+                
+                pipe.multi()
+                for t, (prec, rew) in current_vals.items():
+                    pipe.set(f"{self.prefix}linear:{t}:precision", json.dumps(prec.tolist()))
+                    pipe.set(f"{self.prefix}linear:{t}:reward", json.dumps(rew.tolist()))
+                await pipe.execute()
+                return results
+            except redis.WatchError:
+                continue
+
+    async def asave_vectors(self, vectors: Dict[str, Sequence[float]]) -> None:
+        if not vectors:
+            return
+        pipe = self.client.pipeline()
+        for k, v in vectors.items():
+            pipe.hset(
+                f"{self.prefix}context_vectors",
+                key=k,
+                value=json.dumps(list(v))
+            )
+        await pipe.execute()
+
