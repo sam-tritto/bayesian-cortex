@@ -3,7 +3,7 @@ import urllib.error
 from unittest.mock import MagicMock, patch
 import pytest
 
-from bayes_brain.embeddings import GeminiEmbedder, OpenAIEmbedder
+from bayes_brain.embeddings import GeminiEmbedder, OpenAIEmbedder, SQLiteVectorStore
 
 
 def test_gemini_embedder_missing_key():
@@ -226,3 +226,91 @@ def test_openai_embedder_invalid_client():
     embedder = OpenAIEmbedder(client=mock_client)
     with pytest.raises(ValueError, match="Provided client does not have embeddings.create method"):
         embedder.embed_query("hello")
+
+
+def test_sqlite_vector_store_basic(tmp_path):
+    db_file = str(tmp_path / "test_vectors.db")
+    store = SQLiteVectorStore(db_path=db_file, dimension=3)
+    
+    try:
+        # Add contexts
+        store.add_context("ctx_search", [1.0, 0.0, 0.0])
+        store.add_context("ctx_math", [0.0, 1.0, 0.0])
+
+        # Exact lookup
+        assert store.get_nearest_context([1.0, 0.0, 0.0], similarity_threshold=0.9) == "ctx_search"
+        assert store.get_nearest_context([0.0, 1.0, 0.0], similarity_threshold=0.9) == "ctx_math"
+
+        # Close lookup
+        assert store.get_nearest_context([0.9, 0.1, 0.0], similarity_threshold=0.8) == "ctx_search"
+
+        # Below threshold lookup
+        assert store.get_nearest_context([0.5, 0.5, 0.0], similarity_threshold=0.95) is None
+    finally:
+        store.close()
+
+
+def test_sqlite_vector_store_overwrite(tmp_path):
+    db_file = str(tmp_path / "test_overwrite.db")
+    store = SQLiteVectorStore(db_path=db_file, dimension=3)
+    
+    try:
+        # Add a context
+        store.add_context("ctx_key", [1.0, 0.0, 0.0])
+        assert store.get_nearest_context([1.0, 0.0, 0.0], similarity_threshold=0.9) == "ctx_key"
+
+        # Overwrite with different vector
+        store.add_context("ctx_key", [0.0, 1.0, 0.0])
+        
+        # Verify it updated and no longer matches old vector
+        assert store.get_nearest_context([1.0, 0.0, 0.0], similarity_threshold=0.9) is None
+        assert store.get_nearest_context([0.0, 1.0, 0.0], similarity_threshold=0.9) == "ctx_key"
+    finally:
+        store.close()
+
+
+def test_sqlite_vector_store_missing_sqlite_vec(tmp_path):
+    db_file = str(tmp_path / "test_missing.db")
+    
+    with patch.dict("sys.modules", {"sqlite_vec": None}):
+        with pytest.raises(ImportError, match="sqlite-vec is required"):
+            SQLiteVectorStore(db_path=db_file, dimension=3)
+
+
+def test_router_with_sqlite_vector_store(tmp_path):
+    from bayes_brain.router import BayesianToolRouter
+    from bayes_brain.storage import InMemoryStorage
+    
+    class MockEmbedder:
+        def embed_query(self, text: str) -> list[float]:
+            if "search" in text.lower():
+                return [1.0, 0.0]
+            return [0.0, 1.0]
+
+    db_file = str(tmp_path / "test_router_vec.db")
+    vector_store = SQLiteVectorStore(db_path=db_file, dimension=2)
+    storage = InMemoryStorage()
+    
+    try:
+        router = BayesianToolRouter(
+            storage=storage,
+            embedder=MockEmbedder(),
+            vector_store=vector_store,
+            similarity_threshold=0.85
+        )
+        
+        # Routing first query
+        tool, trace_id = router.route_with_trace("find math help", ["tool_math", "tool_search"])
+        context_key_1 = router._resolve_context_key("find math help")
+        assert context_key_1.startswith("ctx_")
+
+        # Second query is similar, should match same context key
+        context_key_2 = router._resolve_context_key("do some math stuff")
+        assert context_key_1 == context_key_2
+
+        # A search query should spawn a different context key
+        context_key_search = router._resolve_context_key("do search things")
+        assert context_key_1 != context_key_search
+    finally:
+        vector_store.close()
+

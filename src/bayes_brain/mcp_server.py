@@ -5,24 +5,51 @@ from typing import Callable, List, Optional, Tuple, Union
 
 from mcp.server.fastmcp import FastMCP
 
-from bayes_brain.router import BayesianToolRouter
-from bayes_brain.storage import SQLiteStorage
-def _get_all_beliefs(router: BayesianToolRouter) -> dict:
+from bayes_brain.router import AsyncBayesianToolRouter, BayesianToolRouter
+from bayes_brain.storage import AsyncSQLiteStorage, SQLiteStorage
+
+
+async def _get_all_beliefs(router: Union[BayesianToolRouter, AsyncBayesianToolRouter]) -> dict:
     """
     Retrieve all beliefs from the storage backend of the router.
     """
-    from bayes_brain.storage import InMemoryStorage, SQLiteStorage, RedisStorage
+    from bayes_brain.storage import (
+        AsyncInMemoryStorage,
+        AsyncRedisStorage,
+        AsyncSQLiteStorage,
+        InMemoryStorage,
+        RedisStorage,
+        SQLiteStorage,
+    )
 
     storage = router.storage
     beliefs = {}
 
-    if isinstance(storage, InMemoryStorage):
+    if isinstance(storage, AsyncInMemoryStorage):
+        async with storage._lock:
+            for (ctx_key, tool), (alpha, beta) in storage._data.items():
+                if ctx_key not in beliefs:
+                    beliefs[ctx_key] = {}
+                beliefs[ctx_key][tool] = {"alpha": alpha, "beta": beta}
+    elif isinstance(storage, InMemoryStorage):
         with storage._lock:
             for (ctx_key, tool), (alpha, beta) in storage._data.items():
                 if ctx_key not in beliefs:
                     beliefs[ctx_key] = {}
                 beliefs[ctx_key][tool] = {"alpha": alpha, "beta": beta}
 
+    elif isinstance(storage, AsyncSQLiteStorage):
+        import aiosqlite
+        async with aiosqlite.connect(storage.db_path) as conn:
+            try:
+                async with conn.execute("SELECT context_key, tool_name, alpha, beta FROM tool_params") as cursor:
+                    async for row in cursor:
+                        ctx_key, tool, alpha, beta = row
+                        if ctx_key not in beliefs:
+                            beliefs[ctx_key] = {}
+                        beliefs[ctx_key][tool] = {"alpha": float(alpha), "beta": float(beta)}
+            except Exception:
+                pass
     elif isinstance(storage, SQLiteStorage):
         conn = sqlite3.connect(storage.db_path)
         try:
@@ -37,6 +64,29 @@ def _get_all_beliefs(router: BayesianToolRouter) -> dict:
         finally:
             conn.close()
 
+    elif isinstance(storage, AsyncRedisStorage):
+        try:
+            keys = await storage.client.keys(f"{storage.prefix}*")
+            for k in keys:
+                k_str = k.decode("utf-8") if isinstance(k, bytes) else str(k)
+                if k_str.startswith(storage.prefix):
+                    ctx_candidate = k_str[len(storage.prefix):]
+                    if ctx_candidate == "context_vectors" or ctx_candidate.startswith("metadata:"):
+                        continue
+                    
+                    hash_data = await storage.client.hgetall(k)
+                    for field, val in hash_data.items():
+                        field_str = field.decode("utf-8") if isinstance(field, bytes) else str(field)
+                        val_str = val.decode("utf-8") if isinstance(val, bytes) else str(val)
+                        if ":" in field_str:
+                            tool, param_type = field_str.split(":", 1)
+                            if ctx_candidate not in beliefs:
+                                beliefs[ctx_candidate] = {}
+                            if tool not in beliefs[ctx_candidate]:
+                                beliefs[ctx_candidate][tool] = {}
+                            beliefs[ctx_candidate][tool][param_type] = float(val_str)
+        except Exception:
+            pass
     elif isinstance(storage, RedisStorage):
         try:
             keys = storage.client.keys(f"{storage.prefix}*")
@@ -71,7 +121,7 @@ def create_mcp_server(
     tool_executor: Optional[Callable[[str, str], Union[Tuple[str, bool], str]]] = None,
 ) -> FastMCP:
     """
-    Configure and return a FastMCP server wrapping a BayesianToolRouter instance.
+    Configure and return a FastMCP server wrapping an AsyncBayesianToolRouter instance.
 
     Args:
         server_name: The display name of the FastMCP server.
@@ -82,9 +132,9 @@ def create_mcp_server(
     """
     mcp = FastMCP(server_name)
     
-    # Use SQLiteStorage for fast, persistent, local-cache statistics
-    storage = SQLiteStorage(db_path)
-    router = BayesianToolRouter(storage=storage)
+    # Use AsyncSQLiteStorage for non-blocking database operations
+    storage = AsyncSQLiteStorage(db_path)
+    router = AsyncBayesianToolRouter(storage=storage)
     
     available_tools = sub_tools or ["local_pytest", "docker_sandbox", "fallback_api"]
 
@@ -119,7 +169,7 @@ def create_mcp_server(
             task_description: A description of the code or integration task to execute.
         """
         # Thompson sampling selects the tool
-        chosen_tool, trace_id = router.route_with_trace(
+        chosen_tool, trace_id = await router.aroute_with_trace(
             context_text=task_description,
             candidate_tools=available_tools
         )
@@ -130,7 +180,7 @@ def create_mcp_server(
             result, success = f"Adaptive execution encountered an error: {str(e)}", False
 
         # Submit execution feedback asynchronously
-        router.feedback_by_trace(trace_id=trace_id, success=success)
+        await router.afeedback_by_trace(trace_id=trace_id, success=success)
 
         return f"Selected Tool: {chosen_tool}\nExecution Output:\n{result}"
 
@@ -146,8 +196,11 @@ def create_mcp_server(
         context_key = None
         if router.embedder:
             try:
-                vector = router.embedder.embed_query(context)
-                context_key = router._context_store.get_nearest_context(
+                if hasattr(router.embedder, "aembed_query"):
+                    vector = await router.embedder.aembed_query(context)
+                else:
+                    vector = router.embedder.embed_query(context)
+                context_key = await router._context_store.aget_nearest_context(
                     query_vector=vector,
                     similarity_threshold=router.similarity_threshold,
                 )
@@ -159,7 +212,7 @@ def create_mcp_server(
 
         beliefs = {}
         for tool_name in available_tools:
-            alpha, beta = router.storage.get_tool_params(context_key, tool_name)
+            alpha, beta = await router.storage.get_tool_params(context_key, tool_name)
             if alpha == 1.0 and beta == 1.0 and tool_name in router.priors:
                 alpha, beta = router.priors[tool_name]
             beliefs[tool_name] = {"alpha": alpha, "beta": beta}
@@ -183,8 +236,11 @@ def create_mcp_server(
         context_key = None
         if router.embedder:
             try:
-                vector = router.embedder.embed_query(context)
-                context_key = router._context_store.get_nearest_context(
+                if hasattr(router.embedder, "aembed_query"):
+                    vector = await router.embedder.aembed_query(context)
+                else:
+                    vector = router.embedder.embed_query(context)
+                context_key = await router._context_store.aget_nearest_context(
                     query_vector=vector,
                     similarity_threshold=router.similarity_threshold,
                 )
@@ -194,7 +250,7 @@ def create_mcp_server(
         if context_key is None:
             context_key = router._hash_context_text(context)
 
-        router.storage.update_tool_params(context_key, tool, 1.0, 1.0)
+        await router.storage.update_tool_params(context_key, tool, 1.0, 1.0)
         return f"Beliefs for tool '{tool}' under context key '{context_key}' have been reset to (1.0, 1.0)."
 
     @mcp.resource("bayes://metrics")
@@ -202,7 +258,7 @@ def create_mcp_server(
         """
         Expose a JSON/Markdown dashboard of current statistics and beliefs.
         """
-        all_beliefs = _get_all_beliefs(router)
+        all_beliefs = await _get_all_beliefs(router)
 
         lines = [
             "# Bayes Brain Multi-Armed Bandit Metrics",

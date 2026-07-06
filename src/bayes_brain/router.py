@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import json
@@ -7,8 +8,20 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from bayes_brain.embeddings import ContextEmbedder, VectorContextStore, VectorStoreProtocol
-from bayes_brain.storage import BaseStorage, InMemoryStorage
+from bayes_brain.embeddings import (
+    AsyncContextEmbedder,
+    AsyncVectorContextStore,
+    AsyncVectorStoreProtocol,
+    ContextEmbedder,
+    VectorContextStore,
+    VectorStoreProtocol,
+)
+from bayes_brain.storage import (
+    AsyncBaseStorage,
+    AsyncInMemoryStorage,
+    BaseStorage,
+    InMemoryStorage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +42,10 @@ class BayesianToolRouter:
         vector_store: Optional[VectorStoreProtocol] = None,
         fallback_tool: Optional[str] = None,
         telemetry_hook: Optional[Callable[[str, Exception, Dict[str, Any]], None]] = None,
+        mode: str = "clustering",
+        exploration_weight: float = 1.0,
+        lambda_val: float = 1.0,
+        diagonal_covariance: bool = False,
     ) -> None:
         """
         Initialize the BayesianToolRouter.
@@ -40,12 +57,26 @@ class BayesianToolRouter:
             similarity_threshold: Cosine similarity threshold for mapping embeddings to contexts.
             priors: Preseeded alpha/beta priors for tools to mitigate cold start (e.g. {"tool": (10, 2)}).
             vector_store: Optional custom VectorStoreProtocol implementation.
+            mode: routing mode ("clustering", "lints", "linucb").
+            exploration_weight: exploration factor (v for lints, alpha for linucb).
+            lambda_val: L2 regularization coefficient.
+            diagonal_covariance: whether to use diagonal covariance approximation.
         """
         self.storage = storage or InMemoryStorage()
         self.embedder = embedder
         self.fallback_tool = fallback_tool
         self.telemetry_hook = telemetry_hook
         
+        self.mode = mode
+        if mode not in ("clustering", "lints", "linucb"):
+            raise ValueError("mode must be 'clustering', 'lints', or 'linucb'")
+        self.exploration_weight = exploration_weight
+        self.lambda_val = lambda_val
+        self.diagonal_covariance = diagonal_covariance
+
+        if self.mode in ("lints", "linucb") and self.embedder is None:
+            raise ValueError("Linear bandit modes ('lints', 'linucb') require a ContextEmbedder.")
+
         if embedder is None:
             logger.warning(
                 "No ContextEmbedder provided. Operating in exact-match fallback mode. "
@@ -169,30 +200,97 @@ class BayesianToolRouter:
             raise ValueError("Candidate tools list cannot be empty")
 
         try:
-            context_key = self._resolve_context_key(context_text)
-            best_tool = None
-            highest_sample = -1.0
+            if self.mode == "clustering":
+                context_key = self._resolve_context_key(context_text)
+                best_tool = None
+                highest_sample = -1.0
 
-            for tool_name in candidate_tools:
-                alpha, beta = self.storage.get_tool_params(context_key, tool_name)
+                for tool_name in candidate_tools:
+                    alpha, beta = self.storage.get_tool_params(context_key, tool_name)
 
-                # Check for seeded priors on cold start
-                if alpha == 1.0 and beta == 1.0 and tool_name in self.priors:
-                    alpha, beta = self.priors[tool_name]
-                    self.storage.update_tool_params(context_key, tool_name, alpha, beta)
+                    # Check for seeded priors on cold start
+                    if alpha == 1.0 and beta == 1.0 and tool_name in self.priors:
+                        alpha, beta = self.priors[tool_name]
+                        self.storage.update_tool_params(context_key, tool_name, alpha, beta)
 
-                # Sample belief matching beta-binomial posterior
-                sampled_score = np.random.beta(alpha, beta)
+                    # Sample belief matching beta-binomial posterior
+                    sampled_score = np.random.beta(alpha, beta)
 
-                if sampled_score > highest_sample:
-                    highest_sample = sampled_score
-                    best_tool = tool_name
+                    if sampled_score > highest_sample:
+                        highest_sample = sampled_score
+                        best_tool = tool_name
 
-            if best_tool is None:
-                best_tool = candidate_tools[0]
+                if best_tool is None:
+                    best_tool = candidate_tools[0]
 
-            trace_id = self._generate_trace_id(context_key, best_tool)
-            return best_tool, trace_id
+                trace_id = self._generate_trace_id(context_key, best_tool)
+                return best_tool, trace_id
+
+            else:
+                if self.embedder is None:
+                    raise ValueError("embedder is required for linear bandit mode")
+                x = np.array(self.embedder.embed_query(context_text), dtype=np.float32)
+                d = len(x)
+                context_key = self._resolve_context_key(context_text)
+                x_augmented = np.append(x, 1.0)
+                d_aug = d + 1
+                
+                best_tool = None
+                highest_score = -float("inf")
+                
+                for tool_name in candidate_tools:
+                    if tool_name in self.priors:
+                        alpha, beta = self.priors[tool_name]
+                        prior_p = alpha / (alpha + beta)
+                    else:
+                        prior_p = 0.5
+                    
+                    precision, reward_vector = self.storage.get_linear_params(tool_name)
+                    if precision is None or reward_vector is None:
+                        precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                        reward_vector = np.zeros(d_aug, dtype=np.float32)
+                        reward_vector[-1] = self.lambda_val * prior_p
+
+                    if self.diagonal_covariance:
+                        theta_hat = reward_vector / precision
+                    else:
+                        theta_hat = np.linalg.solve(precision, reward_vector)
+
+                    if self.mode == "lints":
+                        if self.diagonal_covariance:
+                            std_devs = self.exploration_weight / np.sqrt(precision)
+                            theta_sample = np.random.normal(theta_hat, std_devs)
+                        else:
+                            cov = np.linalg.inv(precision)
+                            cov = 0.5 * (cov + cov.T)
+                            try:
+                                L = np.linalg.cholesky(cov)
+                                z = np.random.normal(size=d_aug)
+                                theta_sample = theta_hat + self.exploration_weight * np.dot(L, z)
+                            except np.linalg.LinAlgError:
+                                theta_sample = np.random.multivariate_normal(
+                                    theta_hat, (self.exploration_weight ** 2) * cov
+                                )
+                        score = float(np.dot(x_augmented, theta_sample))
+                    else:
+                        expected_reward = float(np.dot(x_augmented, theta_hat))
+                        if self.diagonal_covariance:
+                            uncertainty = np.sqrt(np.sum((x_augmented ** 2) / precision))
+                        else:
+                            cov = np.linalg.inv(precision)
+                            uncertainty = np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented)))
+                        score = expected_reward + self.exploration_weight * uncertainty
+
+                    if score > highest_score:
+                        highest_score = score
+                        best_tool = tool_name
+
+                if best_tool is None:
+                    best_tool = candidate_tools[0]
+
+                trace_id = self._generate_trace_id(context_key, best_tool)
+                return best_tool, trace_id
+
         except Exception as e:
             logger.exception(
                 "BayesianToolRouter routing failed. Triggering fail-safe fallback."
@@ -248,10 +346,46 @@ class BayesianToolRouter:
             reward_val = 1.0 if success else 0.0
 
         try:
-            context_key = self._resolve_context_key(context_text)
-            return self.storage.decay_and_update(
-                context_key, tool_name, self.decay_factor, reward_val
-            )
+            if self.mode == "clustering":
+                context_key = self._resolve_context_key(context_text)
+                return self.storage.decay_and_update(
+                    context_key, tool_name, self.decay_factor, reward_val
+                )
+            else:
+                if self.embedder is None:
+                    raise ValueError("embedder is required for linear bandit mode")
+                x = np.array(self.embedder.embed_query(context_text), dtype=np.float32)
+                context_key = self._resolve_context_key(context_text)
+                x_augmented = np.append(x, 1.0)
+                
+                if tool_name in self.priors:
+                    alpha, beta = self.priors[tool_name]
+                    prior_p = alpha / (alpha + beta)
+                else:
+                    prior_p = 0.5
+                
+                precision, reward_vector = self.storage.decay_and_update_linear(
+                    tool_name=tool_name,
+                    decay_factor=self.decay_factor,
+                    reward=reward_val,
+                    x_augmented=x_augmented,
+                    lambda_val=self.lambda_val,
+                    prior_p=prior_p,
+                    diagonal=self.diagonal_covariance,
+                )
+                
+                if self.diagonal_covariance:
+                    theta_hat = reward_vector / precision
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
+                else:
+                    theta_hat = np.linalg.solve(precision, reward_vector)
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    cov = np.linalg.inv(precision)
+                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
+                
+                return expected_reward, uncertainty
+
         except Exception as e:
             logger.exception("BayesianToolRouter feedback submission failed.")
             if self.telemetry_hook:
@@ -301,9 +435,54 @@ class BayesianToolRouter:
 
         try:
             context_key, tool_name = self._decode_trace_id(trace_id)
-            return self.storage.decay_and_update(
-                context_key, tool_name, self.decay_factor, reward_val
-            )
+            if self.mode == "clustering":
+                return self.storage.decay_and_update(
+                    context_key, tool_name, self.decay_factor, reward_val
+                )
+            else:
+                x_seq = self._context_store.get_context_vector(context_key)
+                if x_seq is None:
+                    logger.warning(
+                        f"Context vector not found for key {context_key}. Using zero vector as fallback."
+                    )
+                    d = 384
+                    precision, _ = self.storage.get_linear_params(tool_name)
+                    if precision is not None:
+                        d = len(precision) - 1
+                    x = np.zeros(d, dtype=np.float32)
+                else:
+                    x = np.array(x_seq, dtype=np.float32)
+                
+                x_augmented = np.append(x, 1.0)
+                
+                if tool_name in self.priors:
+                    alpha, beta = self.priors[tool_name]
+                    prior_p = alpha / (alpha + beta)
+                else:
+                    prior_p = 0.5
+                
+                precision, reward_vector = self.storage.decay_and_update_linear(
+                    tool_name=tool_name,
+                    decay_factor=self.decay_factor,
+                    reward=reward_val,
+                    x_augmented=x_augmented,
+                    lambda_val=self.lambda_val,
+                    prior_p=prior_p,
+                    diagonal=self.diagonal_covariance,
+                )
+                
+                if self.diagonal_covariance:
+                    theta_hat = reward_vector / precision
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
+                else:
+                    theta_hat = np.linalg.solve(precision, reward_vector)
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    cov = np.linalg.inv(precision)
+                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
+                
+                return expected_reward, uncertainty
+
         except Exception as e:
             logger.exception("BayesianToolRouter feedback by trace submission failed.")
             if self.telemetry_hook:
@@ -323,11 +502,42 @@ class BayesianToolRouter:
 
     def get_tool_beliefs(self, context_text: str, tool_name: str) -> Tuple[float, float]:
         """
-        Retrieve current posterior alpha and beta beliefs for a given context and tool.
+        Retrieve current posterior alpha and beta beliefs (or expected reward and uncertainty) for a given context and tool.
         """
         try:
             context_key = self._resolve_context_key(context_text)
-            return self.storage.get_tool_params(context_key, tool_name)
+            if self.mode == "clustering":
+                return self.storage.get_tool_params(context_key, tool_name)
+            else:
+                if self.embedder is None:
+                    raise ValueError("embedder is required for linear bandit mode")
+                x = np.array(self.embedder.embed_query(context_text), dtype=np.float32)
+                x_augmented = np.append(x, 1.0)
+                d_aug = len(x_augmented)
+                
+                if tool_name in self.priors:
+                    alpha, beta = self.priors[tool_name]
+                    prior_p = alpha / (alpha + beta)
+                else:
+                    prior_p = 0.5
+                
+                precision, reward_vector = self.storage.get_linear_params(tool_name)
+                if precision is None or reward_vector is None:
+                    precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    reward_vector = np.zeros(d_aug, dtype=np.float32)
+                    reward_vector[-1] = self.lambda_val * prior_p
+                
+                if self.diagonal_covariance:
+                    theta_hat = reward_vector / precision
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
+                else:
+                    theta_hat = np.linalg.solve(precision, reward_vector)
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    cov = np.linalg.inv(precision)
+                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
+                
+                return expected_reward, uncertainty
         except Exception as e:
             logger.exception("BayesianToolRouter get_tool_beliefs failed.")
             if self.telemetry_hook:
@@ -343,3 +553,518 @@ class BayesianToolRouter:
                 except Exception as hook_err:
                     logger.error(f"Telemetry hook failed: {hook_err}")
             return 1.0, 1.0
+
+
+class AsyncBayesianToolRouter:
+    """
+    Decoupled tool routing middleware implementing a Contextual Multi-Armed Bandit
+    via Thompson Sampling with fully asynchronous operation.
+    """
+
+    def __init__(
+        self,
+        storage: Optional[AsyncBaseStorage] = None,
+        embedder: Optional[Any] = None,  # Can be ContextEmbedder or AsyncContextEmbedder
+        decay_factor: float = 1.0,
+        similarity_threshold: float = 0.8,
+        priors: Optional[Dict[str, Tuple[float, float]]] = None,
+        vector_store: Optional[AsyncVectorStoreProtocol] = None,
+        fallback_tool: Optional[str] = None,
+        telemetry_hook: Optional[Callable[[str, Exception, Dict[str, Any]], Any]] = None,
+        mode: str = "clustering",
+        exploration_weight: float = 1.0,
+        lambda_val: float = 1.0,
+        diagonal_covariance: bool = False,
+    ) -> None:
+        """
+        Initialize the AsyncBayesianToolRouter.
+        """
+        self.storage = storage or AsyncInMemoryStorage()
+        self.embedder = embedder
+        self.fallback_tool = fallback_tool
+        self.telemetry_hook = telemetry_hook
+        
+        self.mode = mode
+        if mode not in ("clustering", "lints", "linucb"):
+            raise ValueError("mode must be 'clustering', 'lints', or 'linucb'")
+        self.exploration_weight = exploration_weight
+        self.lambda_val = lambda_val
+        self.diagonal_covariance = diagonal_covariance
+
+        if self.mode in ("lints", "linucb") and self.embedder is None:
+            raise ValueError("Linear bandit modes ('lints', 'linucb') require a ContextEmbedder/AsyncContextEmbedder.")
+
+        if embedder is None:
+            logger.warning(
+                "No ContextEmbedder/AsyncContextEmbedder provided to async router. "
+                "Operating in exact-match fallback mode."
+            )
+        
+        if not (0.0 < decay_factor <= 1.0):
+            raise ValueError("decay_factor must be in the range (0, 1]")
+        self.decay_factor = decay_factor
+        self.similarity_threshold = similarity_threshold
+        self.priors = priors or {}
+
+        self._custom_vector_store_active = vector_store is not None
+        if vector_store is not None:
+            self._context_store = vector_store
+        else:
+            self._context_store = AsyncVectorContextStore()
+
+        self._initialized = False
+        self._init_lock = asyncio.Lock()
+
+    async def _ensure_initialized(self) -> None:
+        if self._initialized:
+            return
+        async with self._init_lock:
+            if self._initialized:
+                return
+            await self._load_context_store()
+            self._initialized = True
+
+    async def _load_context_store(self) -> None:
+        """Attempt to restore the VectorContextStore from the storage backend."""
+        if self._custom_vector_store_active:
+            return
+        try:
+            vectors = await self.storage.load_all_vectors()
+            for key, vector in vectors.items():
+                await self._context_store.aadd_context(key, vector)
+        except Exception:
+            pass
+
+    async def _save_context_store(self) -> None:
+        """Persist the VectorContextStore to the storage backend."""
+        if self._custom_vector_store_active:
+            return
+        try:
+            if hasattr(self._context_store, "_contexts"):
+                for key, vector in self._context_store._contexts.items():
+                    await self.storage.save_vector(key, vector)
+        except Exception:
+            pass
+
+    def _hash_context_text(self, context_text: str) -> str:
+        normalized = " ".join(context_text.strip().split())
+        sha256_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        return f"hash_{sha256_hash}"
+
+    async def _resolve_context_key(self, context_text: str) -> str:
+        if not self.embedder:
+            return self._hash_context_text(context_text)
+
+        try:
+            if hasattr(self.embedder, "aembed_query"):
+                vector = await self.embedder.aembed_query(context_text)
+            else:
+                vector = self.embedder.embed_query(context_text)
+        except Exception:
+            logger.warning(
+                "Failed to generate embedding for context. Falling back to exact-match hashing."
+            )
+            return self._hash_context_text(context_text)
+
+        matched_key = await self._context_store.aget_nearest_context(
+            query_vector=vector,
+            similarity_threshold=self.similarity_threshold,
+        )
+
+        if matched_key is not None:
+            return matched_key
+
+        new_key = f"ctx_{uuid.uuid4().hex}"
+        await self._context_store.aadd_context(new_key, vector)
+        if not self._custom_vector_store_active:
+            await self.storage.save_vector(new_key, vector)
+        return new_key
+
+    def _generate_trace_id(self, context_key: str, tool_name: str) -> str:
+        payload = {
+            "ctx": context_key,
+            "tool": tool_name,
+            "nonce": uuid.uuid4().hex,
+        }
+        json_bytes = json.dumps(payload).encode("utf-8")
+        return base64.urlsafe_b64encode(json_bytes).decode("utf-8")
+
+    def _decode_trace_id(self, trace_id: str) -> Tuple[str, str]:
+        try:
+            json_bytes = base64.urlsafe_b64decode(trace_id.encode("utf-8"))
+            payload = json.loads(json_bytes.decode("utf-8"))
+            return payload["ctx"], payload["tool"]
+        except Exception as e:
+            raise ValueError(f"Invalid or corrupted trace ID: {trace_id}") from e
+
+    async def _call_telemetry(self, event: str, exc: Exception, ctx: Dict[str, Any]) -> None:
+        if not self.telemetry_hook:
+            return
+        try:
+            if asyncio.iscoroutinefunction(self.telemetry_hook):
+                await self.telemetry_hook(event, exc, ctx)
+            else:
+                self.telemetry_hook(event, exc, ctx)
+        except Exception as hook_err:
+            logger.error(f"Telemetry hook failed: {hook_err}")
+
+    async def aroute(self, context_text: str, candidate_tools: List[str]) -> str:
+        chosen_tool, _ = await self.aroute_with_trace(context_text, candidate_tools)
+        return chosen_tool
+
+    async def aroute_with_trace(
+        self, context_text: str, candidate_tools: List[str]
+    ) -> Tuple[str, str]:
+        if not candidate_tools:
+            raise ValueError("Candidate tools list cannot be empty")
+
+        await self._ensure_initialized()
+
+        try:
+            if self.mode == "clustering":
+                context_key = await self._resolve_context_key(context_text)
+                best_tool = None
+                highest_sample = -1.0
+
+                for tool_name in candidate_tools:
+                    alpha, beta = await self.storage.get_tool_params(context_key, tool_name)
+
+                    if alpha == 1.0 and beta == 1.0 and tool_name in self.priors:
+                        alpha, beta = self.priors[tool_name]
+                        await self.storage.update_tool_params(context_key, tool_name, alpha, beta)
+
+                    sampled_score = np.random.beta(alpha, beta)
+
+                    if sampled_score > highest_sample:
+                        highest_sample = sampled_score
+                        best_tool = tool_name
+
+                if best_tool is None:
+                    best_tool = candidate_tools[0]
+
+                trace_id = self._generate_trace_id(context_key, best_tool)
+                return best_tool, trace_id
+
+            else:
+                if self.embedder is None:
+                    raise ValueError("embedder is required for linear bandit mode")
+                
+                if hasattr(self.embedder, "aembed_query"):
+                    x_seq = await self.embedder.aembed_query(context_text)
+                else:
+                    x_seq = self.embedder.embed_query(context_text)
+                
+                x = np.array(x_seq, dtype=np.float32)
+                d = len(x)
+                context_key = await self._resolve_context_key(context_text)
+                x_augmented = np.append(x, 1.0)
+                d_aug = d + 1
+                
+                best_tool = None
+                highest_score = -float("inf")
+                
+                for tool_name in candidate_tools:
+                    if tool_name in self.priors:
+                        alpha, beta = self.priors[tool_name]
+                        prior_p = alpha / (alpha + beta)
+                    else:
+                        prior_p = 0.5
+                    
+                    precision, reward_vector = await self.storage.aget_linear_params(tool_name)
+                    if precision is None or reward_vector is None:
+                        precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                        reward_vector = np.zeros(d_aug, dtype=np.float32)
+                        reward_vector[-1] = self.lambda_val * prior_p
+
+                    if self.diagonal_covariance:
+                        theta_hat = reward_vector / precision
+                    else:
+                        theta_hat = np.linalg.solve(precision, reward_vector)
+
+                    if self.mode == "lints":
+                        if self.diagonal_covariance:
+                            std_devs = self.exploration_weight / np.sqrt(precision)
+                            theta_sample = np.random.normal(theta_hat, std_devs)
+                        else:
+                            cov = np.linalg.inv(precision)
+                            cov = 0.5 * (cov + cov.T)
+                            try:
+                                L = np.linalg.cholesky(cov)
+                                z = np.random.normal(size=d_aug)
+                                theta_sample = theta_hat + self.exploration_weight * np.dot(L, z)
+                            except np.linalg.LinAlgError:
+                                theta_sample = np.random.multivariate_normal(
+                                    theta_hat, (self.exploration_weight ** 2) * cov
+                                )
+                        score = float(np.dot(x_augmented, theta_sample))
+                    else:
+                        expected_reward = float(np.dot(x_augmented, theta_hat))
+                        if self.diagonal_covariance:
+                            uncertainty = np.sqrt(np.sum((x_augmented ** 2) / precision))
+                        else:
+                            cov = np.linalg.inv(precision)
+                            uncertainty = np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented)))
+                        score = expected_reward + self.exploration_weight * uncertainty
+
+                    if score > highest_score:
+                        highest_score = score
+                        best_tool = tool_name
+
+                if best_tool is None:
+                    best_tool = candidate_tools[0]
+
+                trace_id = self._generate_trace_id(context_key, best_tool)
+                return best_tool, trace_id
+
+        except Exception as e:
+            logger.exception(
+                "AsyncBayesianToolRouter routing failed. Triggering fail-safe fallback."
+            )
+            await self._call_telemetry(
+                "route_failure",
+                e,
+                {
+                    "context_text": context_text,
+                    "candidate_tools": candidate_tools,
+                },
+            )
+
+            if self.fallback_tool and self.fallback_tool in candidate_tools:
+                fallback_choice = self.fallback_tool
+            else:
+                fallback_choice = candidate_tools[0]
+
+            fallback_trace_id = self._generate_trace_id("fallback_ctx", fallback_choice)
+            return fallback_choice, fallback_trace_id
+
+    async def afeedback(
+        self,
+        context_text: str,
+        tool_name: str,
+        success: Optional[bool] = None,
+        reward: Optional[float] = None,
+    ) -> Tuple[float, float]:
+        if success is None and reward is None:
+            raise ValueError("Either 'success' or 'reward' must be provided.")
+
+        if success is not None and reward is not None:
+            expected_reward = 1.0 if success else 0.0
+            if reward != expected_reward:
+                raise ValueError(
+                    f"Conflicting feedback: success={success} and reward={reward}. "
+                    "Please provide only one, or ensure they are consistent."
+                )
+
+        if reward is not None:
+            if not (0.0 <= reward <= 1.0):
+                raise ValueError("reward must be between 0.0 and 1.0 inclusive")
+            reward_val = float(reward)
+        else:
+            reward_val = 1.0 if success else 0.0
+
+        await self._ensure_initialized()
+
+        try:
+            if self.mode == "clustering":
+                context_key = await self._resolve_context_key(context_text)
+                return await self.storage.decay_and_update(
+                    context_key, tool_name, self.decay_factor, reward_val
+                )
+            else:
+                if self.embedder is None:
+                    raise ValueError("embedder is required for linear bandit mode")
+                
+                if hasattr(self.embedder, "aembed_query"):
+                    x_seq = await self.embedder.aembed_query(context_text)
+                else:
+                    x_seq = self.embedder.embed_query(context_text)
+                    
+                x = np.array(x_seq, dtype=np.float32)
+                context_key = await self._resolve_context_key(context_text)
+                x_augmented = np.append(x, 1.0)
+                
+                if tool_name in self.priors:
+                    alpha, beta = self.priors[tool_name]
+                    prior_p = alpha / (alpha + beta)
+                else:
+                    prior_p = 0.5
+                
+                precision, reward_vector = await self.storage.adecay_and_update_linear(
+                    tool_name=tool_name,
+                    decay_factor=self.decay_factor,
+                    reward=reward_val,
+                    x_augmented=x_augmented,
+                    lambda_val=self.lambda_val,
+                    prior_p=prior_p,
+                    diagonal=self.diagonal_covariance,
+                )
+                
+                if self.diagonal_covariance:
+                    theta_hat = reward_vector / precision
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
+                else:
+                    theta_hat = np.linalg.solve(precision, reward_vector)
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    cov = np.linalg.inv(precision)
+                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
+                
+                return expected_reward, uncertainty
+
+        except Exception as e:
+            logger.exception("AsyncBayesianToolRouter feedback submission failed.")
+            await self._call_telemetry(
+                "feedback_failure",
+                e,
+                {
+                    "context_text": context_text,
+                    "tool_name": tool_name,
+                    "success": success,
+                    "reward": reward,
+                },
+            )
+            return 1.0, 1.0
+
+    async def afeedback_by_trace(
+        self,
+        trace_id: str,
+        success: Optional[bool] = None,
+        reward: Optional[float] = None,
+    ) -> Tuple[float, float]:
+        if success is None and reward is None:
+            raise ValueError("Either 'success' or 'reward' must be provided.")
+
+        if success is not None and reward is not None:
+            expected_reward = 1.0 if success else 0.0
+            if reward != expected_reward:
+                raise ValueError(
+                    f"Conflicting feedback: success={success} and reward={reward}. "
+                    "Please provide only one, or ensure they are consistent."
+                )
+
+        if reward is not None:
+            if not (0.0 <= reward <= 1.0):
+                raise ValueError("reward must be between 0.0 and 1.0 inclusive")
+            reward_val = float(reward)
+        else:
+            reward_val = 1.0 if success else 0.0
+
+        await self._ensure_initialized()
+
+        try:
+            context_key, tool_name = self._decode_trace_id(trace_id)
+            if self.mode == "clustering":
+                return await self.storage.decay_and_update(
+                    context_key, tool_name, self.decay_factor, reward_val
+                )
+            else:
+                x_seq = await self._context_store.aget_context_vector(context_key)
+                if x_seq is None:
+                    logger.warning(
+                        f"Context vector not found for key {context_key}. Using zero vector as fallback."
+                    )
+                    d = 384
+                    precision, _ = await self.storage.aget_linear_params(tool_name)
+                    if precision is not None:
+                        d = len(precision) - 1
+                    x = np.zeros(d, dtype=np.float32)
+                else:
+                    x = np.array(x_seq, dtype=np.float32)
+                
+                x_augmented = np.append(x, 1.0)
+                
+                if tool_name in self.priors:
+                    alpha, beta = self.priors[tool_name]
+                    prior_p = alpha / (alpha + beta)
+                else:
+                    prior_p = 0.5
+                
+                precision, reward_vector = await self.storage.adecay_and_update_linear(
+                    tool_name=tool_name,
+                    decay_factor=self.decay_factor,
+                    reward=reward_val,
+                    x_augmented=x_augmented,
+                    lambda_val=self.lambda_val,
+                    prior_p=prior_p,
+                    diagonal=self.diagonal_covariance,
+                )
+                
+                if self.diagonal_covariance:
+                    theta_hat = reward_vector / precision
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
+                else:
+                    theta_hat = np.linalg.solve(precision, reward_vector)
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    cov = np.linalg.inv(precision)
+                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
+                
+                return expected_reward, uncertainty
+
+        except Exception as e:
+            logger.exception("AsyncBayesianToolRouter feedback by trace submission failed.")
+            await self._call_telemetry(
+                "feedback_by_trace_failure",
+                e,
+                {
+                    "trace_id": trace_id,
+                    "success": success,
+                    "reward": reward,
+                },
+            )
+            return 1.0, 1.0
+
+    async def aget_tool_beliefs(self, context_text: str, tool_name: str) -> Tuple[float, float]:
+        await self._ensure_initialized()
+        try:
+            context_key = await self._resolve_context_key(context_text)
+            if self.mode == "clustering":
+                return await self.storage.get_tool_params(context_key, tool_name)
+            else:
+                if self.embedder is None:
+                    raise ValueError("embedder is required for linear bandit mode")
+                
+                if hasattr(self.embedder, "aembed_query"):
+                    x_seq = await self.embedder.aembed_query(context_text)
+                else:
+                    x_seq = self.embedder.embed_query(context_text)
+                    
+                x = np.array(x_seq, dtype=np.float32)
+                x_augmented = np.append(x, 1.0)
+                d_aug = len(x_augmented)
+                
+                if tool_name in self.priors:
+                    alpha, beta = self.priors[tool_name]
+                    prior_p = alpha / (alpha + beta)
+                else:
+                    prior_p = 0.5
+                
+                precision, reward_vector = await self.storage.aget_linear_params(tool_name)
+                if precision is None or reward_vector is None:
+                    precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    reward_vector = np.zeros(d_aug, dtype=np.float32)
+                    reward_vector[-1] = self.lambda_val * prior_p
+                
+                if self.diagonal_covariance:
+                    theta_hat = reward_vector / precision
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
+                else:
+                    theta_hat = np.linalg.solve(precision, reward_vector)
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    cov = np.linalg.inv(precision)
+                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
+                
+                return expected_reward, uncertainty
+        except Exception as e:
+            logger.exception("AsyncBayesianToolRouter aget_tool_beliefs failed.")
+            await self._call_telemetry(
+                "get_tool_beliefs_failure",
+                e,
+                {
+                    "context_text": context_text,
+                    "tool_name": tool_name,
+                },
+            )
+            return 1.0, 1.0
+

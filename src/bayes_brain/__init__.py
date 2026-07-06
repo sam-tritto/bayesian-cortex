@@ -1,14 +1,23 @@
 from bayes_brain.embeddings import (
+    AsyncContextEmbedder,
+    AsyncSQLiteVectorStore,
+    AsyncVectorContextStore,
+    AsyncVectorStoreProtocol,
     ContextEmbedder,
     GeminiEmbedder,
     LocalSentenceTransformerEmbedder,
     OpenAIEmbedder,
+    SQLiteVectorStore,
     VectorContextStore,
     VectorStoreProtocol,
 )
 from bayes_brain.mcp_server import create_mcp_server
-from bayes_brain.router import BayesianToolRouter
+from bayes_brain.router import AsyncBayesianToolRouter, BayesianToolRouter
 from bayes_brain.storage import (
+    AsyncBaseStorage,
+    AsyncInMemoryStorage,
+    AsyncRedisStorage,
+    AsyncSQLiteStorage,
     BaseStorage,
     InMemoryStorage,
     RedisStorage,
@@ -17,15 +26,25 @@ from bayes_brain.storage import (
 
 __all__ = [
     "BayesianToolRouter",
+    "AsyncBayesianToolRouter",
     "BaseStorage",
+    "AsyncBaseStorage",
     "InMemoryStorage",
+    "AsyncInMemoryStorage",
     "SQLiteStorage",
+    "AsyncSQLiteStorage",
     "RedisStorage",
+    "AsyncRedisStorage",
     "ContextEmbedder",
+    "AsyncContextEmbedder",
     "GeminiEmbedder",
     "LocalSentenceTransformerEmbedder",
     "OpenAIEmbedder",
+    "SQLiteVectorStore",
+    "AsyncSQLiteVectorStore",
     "VectorContextStore",
+    "AsyncVectorContextStore",
     "VectorStoreProtocol",
+    "AsyncVectorStoreProtocol",
     "create_mcp_server",
 ]
