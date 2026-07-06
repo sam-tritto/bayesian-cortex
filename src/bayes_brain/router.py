@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -51,6 +51,9 @@ class BayesianToolRouter:
         lambda_val: float = 1.0,
         diagonal_covariance: bool = False,
         secret_key: Optional[Union[str, bytes]] = None,
+        hybrid: bool = False,
+        tool_embeddings: Optional[Dict[str, Union[Sequence[float], np.ndarray]]] = None,
+        tool_metadata: Optional[Dict[str, str]] = None,
     ) -> None:
         """
         Initialize the BayesianToolRouter.
@@ -68,6 +71,9 @@ class BayesianToolRouter:
             lambda_val: L2 regularization coefficient.
             diagonal_covariance: whether to use diagonal covariance approximation.
             secret_key: Secret key used to sign and verify trace IDs via HMAC.
+            hybrid: Whether to use shared-parameter (hybrid) contextual bandit.
+            tool_embeddings: Dict mapping tool name to its embedding vector.
+            tool_metadata: Dict mapping tool name to its metadata string.
         """
         self.storage = storage or InMemoryStorage()
         self.embedder = embedder
@@ -80,6 +86,13 @@ class BayesianToolRouter:
         self.exploration_weight = exploration_weight
         self.lambda_val = lambda_val
         self.diagonal_covariance = diagonal_covariance
+        self.hybrid = hybrid
+        self.tool_embeddings = tool_embeddings
+        self.tool_metadata = tool_metadata
+        self._tool_embedding_cache: Dict[str, np.ndarray] = {}
+
+        if self.hybrid and self.mode not in ("lints", "linucb"):
+            raise ValueError("Hybrid mode is only supported with linear bandit modes ('lints', 'linucb').")
 
         # Determine secret key for signing trace IDs
         if secret_key is not None:
@@ -188,6 +201,32 @@ class BayesianToolRouter:
         normalized = " ".join(context_text.strip().split())
         sha256_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
         return f"hash_{sha256_hash}"
+
+    def _get_tool_embedding(self, tool_name: str) -> np.ndarray:
+        if tool_name in self._tool_embedding_cache:
+            return self._tool_embedding_cache[tool_name]
+
+        # 1. Direct embedding
+        if self.tool_embeddings and tool_name in self.tool_embeddings:
+            emb = np.array(self.tool_embeddings[tool_name], dtype=np.float32)
+            self._tool_embedding_cache[tool_name] = emb
+            return emb
+
+        # 2. Metadata string
+        if self.tool_metadata and tool_name in self.tool_metadata:
+            if self.embedder is None:
+                raise ValueError("ContextEmbedder is required to embed tool metadata.")
+            emb = np.array(self.embedder.embed_query(self.tool_metadata[tool_name]), dtype=np.float32)
+            self._tool_embedding_cache[tool_name] = emb
+            return emb
+
+        # 3. Fallback
+        if self.embedder is None:
+            emb = np.array([0.0], dtype=np.float32)
+        else:
+            emb = np.array(self.embedder.embed_query(tool_name), dtype=np.float32)
+        self._tool_embedding_cache[tool_name] = emb
+        return emb
 
     def _resolve_context_key(self, context_text: str) -> str:
         """
@@ -364,6 +403,74 @@ class BayesianToolRouter:
                 self.storage.log_selection(trace_id, context_key, best_tool)
                 return best_tool, trace_id
 
+            elif self.hybrid:
+                if self.embedder is None:
+                    raise ValueError("embedder is required for linear bandit mode")
+                x_c = np.array(self.embedder.embed_query(context_text), dtype=np.float32)
+                context_key = self._resolve_context_key(context_text)
+
+                if not candidate_tools:
+                    raise ValueError("Candidate tools list cannot be empty")
+                
+                t_first = self._get_tool_embedding(candidate_tools[0])
+                d_aug = len(x_c) + len(t_first) + 1
+                
+                precision, reward_vector = self.storage.get_linear_params("__shared_hybrid__")
+                if precision is None or reward_vector is None:
+                    precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    reward_vector = np.zeros(d_aug, dtype=np.float32)
+                    reward_vector[-1] = self.lambda_val * 0.5
+
+                if self.diagonal_covariance:
+                    theta_hat = reward_vector / precision
+                else:
+                    theta_hat = np.linalg.solve(precision, reward_vector)
+
+                if self.mode == "lints":
+                    if self.diagonal_covariance:
+                        std_devs = self.exploration_weight / np.sqrt(precision)
+                        theta_sample = np.random.normal(theta_hat, std_devs)
+                    else:
+                        cov = np.linalg.inv(precision)
+                        cov = 0.5 * (cov + cov.T)
+                        try:
+                            L = np.linalg.cholesky(cov)
+                            z = np.random.normal(size=d_aug)
+                            theta_sample = theta_hat + self.exploration_weight * np.dot(L, z)
+                        except np.linalg.LinAlgError:
+                            theta_sample = np.random.multivariate_normal(
+                                theta_hat, (self.exploration_weight ** 2) * cov
+                            )
+
+                best_tool = None
+                highest_score = -float("inf")
+
+                for tool_name in candidate_tools:
+                    t_a = self._get_tool_embedding(tool_name)
+                    x_augmented = np.concatenate([x_c, t_a, [1.0]])
+
+                    if self.mode == "lints":
+                        score = float(np.dot(x_augmented, theta_sample))
+                    else:
+                        expected_reward = float(np.dot(x_augmented, theta_hat))
+                        if self.diagonal_covariance:
+                            uncertainty = np.sqrt(np.sum((x_augmented ** 2) / precision))
+                        else:
+                            cov = np.linalg.inv(precision)
+                            uncertainty = np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented)))
+                        score = expected_reward + self.exploration_weight * uncertainty
+
+                    if score > highest_score:
+                        highest_score = score
+                        best_tool = tool_name
+
+                if best_tool is None:
+                    best_tool = candidate_tools[0]
+
+                trace_id = self._generate_trace_id(context_key, best_tool)
+                self.storage.log_selection(trace_id, context_key, best_tool)
+                return best_tool, trace_id
+
             else:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
@@ -488,6 +595,38 @@ class BayesianToolRouter:
                 return self.storage.decay_and_update(
                     context_key, tool_name, self.decay_factor, reward_val
                 )
+            elif self.hybrid:
+                if self.embedder is None:
+                    raise ValueError("embedder is required for linear bandit mode")
+                x_c = np.array(self.embedder.embed_query(context_text), dtype=np.float32)
+                t_a = self._get_tool_embedding(tool_name)
+                x_augmented = np.concatenate([x_c, t_a, [1.0]])
+
+                prior_alpha, prior_beta = self.get_prior(context_text, tool_name)
+                prior_p = prior_alpha / (prior_alpha + prior_beta)
+
+                precision, reward_vector = self.storage.decay_and_update_linear(
+                    tool_name="__shared_hybrid__",
+                    decay_factor=self.decay_factor,
+                    reward=reward_val,
+                    x_augmented=x_augmented,
+                    lambda_val=self.lambda_val,
+                    prior_p=prior_p,
+                    diagonal=self.diagonal_covariance,
+                )
+
+                if self.diagonal_covariance:
+                    theta_hat = reward_vector / precision
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
+                else:
+                    theta_hat = np.linalg.solve(precision, reward_vector)
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    cov = np.linalg.inv(precision)
+                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
+
+                return expected_reward, uncertainty
+
             else:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
@@ -577,6 +716,51 @@ class BayesianToolRouter:
                 return self.storage.decay_and_update(
                     context_key, tool_name, self.decay_factor, reward_val
                 )
+            elif self.hybrid:
+                x_seq = self._context_store.get_context_vector(context_key)
+                t_a = self._get_tool_embedding(tool_name)
+                if x_seq is None:
+                    logger.warning(
+                        f"Context vector not found for key {context_key}. Using zero vector as fallback."
+                    )
+                    d = 384
+                    precision, _ = self.storage.get_linear_params("__shared_hybrid__")
+                    if precision is not None:
+                        d = len(precision) - len(t_a) - 1
+                    x = np.zeros(d, dtype=np.float32)
+                else:
+                    x = np.array(x_seq, dtype=np.float32)
+                
+                x_augmented = np.concatenate([x, t_a, [1.0]])
+                
+                if tool_name in self.priors:
+                    alpha, beta = self.priors[tool_name]
+                    prior_p = alpha / (alpha + beta)
+                else:
+                    prior_p = 0.5
+                
+                precision, reward_vector = self.storage.decay_and_update_linear(
+                    tool_name="__shared_hybrid__",
+                    decay_factor=self.decay_factor,
+                    reward=reward_val,
+                    x_augmented=x_augmented,
+                    lambda_val=self.lambda_val,
+                    prior_p=prior_p,
+                    diagonal=self.diagonal_covariance,
+                )
+                
+                if self.diagonal_covariance:
+                    theta_hat = reward_vector / precision
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
+                else:
+                    theta_hat = np.linalg.solve(precision, reward_vector)
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    cov = np.linalg.inv(precision)
+                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
+                
+                return expected_reward, uncertainty
+
             else:
                 x_seq = self._context_store.get_context_vector(context_key)
                 if x_seq is None:
@@ -649,6 +833,35 @@ class BayesianToolRouter:
                 if alpha == 1.0 and beta == 1.0:
                     alpha, beta = self.get_prior(context_text, tool_name)
                 return alpha, beta
+            elif self.hybrid:
+                if self.embedder is None:
+                    raise ValueError("embedder is required for linear bandit mode")
+                x_c = np.array(self.embedder.embed_query(context_text), dtype=np.float32)
+                t_a = self._get_tool_embedding(tool_name)
+                x_augmented = np.concatenate([x_c, t_a, [1.0]])
+                d_aug = len(x_augmented)
+
+                prior_alpha, prior_beta = self.get_prior(context_text, tool_name)
+                prior_p = prior_alpha / (prior_alpha + prior_beta)
+
+                precision, reward_vector = self.storage.get_linear_params("__shared_hybrid__")
+                if precision is None or reward_vector is None:
+                    precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    reward_vector = np.zeros(d_aug, dtype=np.float32)
+                    reward_vector[-1] = self.lambda_val * prior_p
+
+                if self.diagonal_covariance:
+                    theta_hat = reward_vector / precision
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
+                else:
+                    theta_hat = np.linalg.solve(precision, reward_vector)
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    cov = np.linalg.inv(precision)
+                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
+
+                return expected_reward, uncertainty
+
             else:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
@@ -788,6 +1001,83 @@ class BayesianToolRouter:
                     else:
                         for (ctx_key, tool_name), (alpha, beta) in priors_to_update.items():
                             self.storage.update_tool_params(ctx_key, tool_name, alpha, beta)
+
+                return results
+
+            elif self.hybrid:
+                if self.embedder is None:
+                    raise ValueError("embedder is required for linear bandit mode")
+                
+                if hasattr(self.embedder, "embed_queries"):
+                    vectors = self.embedder.embed_queries(contexts)
+                else:
+                    vectors = [self.embedder.embed_query(ctx) for ctx in contexts]
+
+                context_keys = self._resolve_context_keys(contexts)
+                
+                t_first = self._get_tool_embedding(candidate_tools[0])
+                d_aug = len(vectors[0]) + len(t_first) + 1
+                
+                precision, reward_vector = self.storage.get_linear_params("__shared_hybrid__")
+                if precision is None or reward_vector is None:
+                    precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    reward_vector = np.zeros(d_aug, dtype=np.float32)
+                    reward_vector[-1] = self.lambda_val * 0.5
+
+                if self.diagonal_covariance:
+                    theta_hat = reward_vector / precision
+                else:
+                    theta_hat = np.linalg.solve(precision, reward_vector)
+
+                results = []
+                for idx, x_seq in enumerate(vectors):
+                    x_c = np.array(x_seq, dtype=np.float32)
+                    context_key = context_keys[idx]
+                    
+                    if self.mode == "lints":
+                        if self.diagonal_covariance:
+                            std_devs = self.exploration_weight / np.sqrt(precision)
+                            theta_sample = np.random.normal(theta_hat, std_devs)
+                        else:
+                            cov = np.linalg.inv(precision)
+                            cov = 0.5 * (cov + cov.T)
+                            try:
+                                L = np.linalg.cholesky(cov)
+                                z = np.random.normal(size=d_aug)
+                                theta_sample = theta_hat + self.exploration_weight * np.dot(L, z)
+                            except np.linalg.LinAlgError:
+                                theta_sample = np.random.multivariate_normal(
+                                    theta_hat, (self.exploration_weight ** 2) * cov
+                                )
+
+                    best_tool = None
+                    highest_score = -float("inf")
+
+                    for tool_name in candidate_tools:
+                        t_a = self._get_tool_embedding(tool_name)
+                        x_augmented = np.concatenate([x_c, t_a, [1.0]])
+
+                        if self.mode == "lints":
+                            score = float(np.dot(x_augmented, theta_sample))
+                        else:
+                            expected_reward = float(np.dot(x_augmented, theta_hat))
+                            if self.diagonal_covariance:
+                                uncertainty = np.sqrt(np.sum((x_augmented ** 2) / precision))
+                            else:
+                                cov = np.linalg.inv(precision)
+                                uncertainty = np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented)))
+                            score = expected_reward + self.exploration_weight * uncertainty
+
+                        if score > highest_score:
+                            highest_score = score
+                            best_tool = tool_name
+
+                    if best_tool is None:
+                        best_tool = candidate_tools[0]
+
+                    trace_id = self._generate_trace_id(context_key, best_tool)
+                    self.storage.log_selection(trace_id, context_key, best_tool)
+                    results.append((best_tool, trace_id))
 
                 return results
 
@@ -960,6 +1250,41 @@ class BayesianToolRouter:
                 for fb in prepared_feedbacks:
                     updates.append((fb["context_key"], fb["tool_name"], self.decay_factor, fb["reward_val"]))
                 self.storage.decay_and_update_batch(updates)
+            elif self.hybrid:
+                updates = []
+                for fb in prepared_feedbacks:
+                    tool_name = fb["tool_name"]
+                    reward_val = fb["reward_val"]
+                    t_a = self._get_tool_embedding(tool_name)
+
+                    if fb["type"] == "trace":
+                        x_seq = self._context_store.get_context_vector(fb["context_key"])
+                        if x_seq is None:
+                            logger.warning(
+                                f"Context vector not found for key {fb['context_key']}. Using zero vector as fallback."
+                            )
+                            d = 384
+                            precision, _ = self.storage.get_linear_params("__shared_hybrid__")
+                            if precision is not None:
+                                d = len(precision) - len(t_a) - 1
+                            x = np.zeros(d, dtype=np.float32)
+                        else:
+                            x = np.array(x_seq, dtype=np.float32)
+                    else:
+                        x = np.array(fb["vector"], dtype=np.float32)
+
+                    x_augmented = np.concatenate([x, t_a, [1.0]])
+
+                    if tool_name in self.priors:
+                        alpha, beta = self.priors[tool_name]
+                        prior_p = alpha / (alpha + beta)
+                    else:
+                        prior_p = 0.5
+
+                    updates.append(("__shared_hybrid__", self.decay_factor, reward_val, x_augmented, self.lambda_val, prior_p, self.diagonal_covariance))
+
+                self.storage.decay_and_update_linear_batch(updates)
+
             else:
                 updates = []
                 for fb in prepared_feedbacks:
@@ -1033,6 +1358,9 @@ class AsyncBayesianToolRouter:
         lambda_val: float = 1.0,
         diagonal_covariance: bool = False,
         secret_key: Optional[Union[str, bytes]] = None,
+        hybrid: bool = False,
+        tool_embeddings: Optional[Dict[str, Union[Sequence[float], np.ndarray]]] = None,
+        tool_metadata: Optional[Dict[str, str]] = None,
     ) -> None:
         """
         Initialize the AsyncBayesianToolRouter.
@@ -1048,6 +1376,13 @@ class AsyncBayesianToolRouter:
         self.exploration_weight = exploration_weight
         self.lambda_val = lambda_val
         self.diagonal_covariance = diagonal_covariance
+        self.hybrid = hybrid
+        self.tool_embeddings = tool_embeddings
+        self.tool_metadata = tool_metadata
+        self._tool_embedding_cache: Dict[str, np.ndarray] = {}
+
+        if self.hybrid and self.mode not in ("lints", "linucb"):
+            raise ValueError("Hybrid mode is only supported with linear bandit modes ('lints', 'linucb').")
 
         # Determine secret key for signing trace IDs
         if secret_key is not None:
@@ -1162,6 +1497,40 @@ class AsyncBayesianToolRouter:
         normalized = " ".join(context_text.strip().split())
         sha256_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
         return f"hash_{sha256_hash}"
+
+    async def _get_tool_embedding(self, tool_name: str) -> np.ndarray:
+        if tool_name in self._tool_embedding_cache:
+            return self._tool_embedding_cache[tool_name]
+
+        # 1. Direct embedding
+        if self.tool_embeddings and tool_name in self.tool_embeddings:
+            emb = np.array(self.tool_embeddings[tool_name], dtype=np.float32)
+            self._tool_embedding_cache[tool_name] = emb
+            return emb
+
+        # 2. Metadata string
+        if self.tool_metadata and tool_name in self.tool_metadata:
+            if self.embedder is None:
+                raise ValueError("ContextEmbedder/AsyncContextEmbedder is required to embed tool metadata.")
+            if hasattr(self.embedder, "aembed_query"):
+                raw_emb = await self.embedder.aembed_query(self.tool_metadata[tool_name])
+            else:
+                raw_emb = self.embedder.embed_query(self.tool_metadata[tool_name])
+            emb = np.array(raw_emb, dtype=np.float32)
+            self._tool_embedding_cache[tool_name] = emb
+            return emb
+
+        # 3. Fallback
+        if self.embedder is None:
+            emb = np.array([0.0], dtype=np.float32)
+        else:
+            if hasattr(self.embedder, "aembed_query"):
+                raw_emb = await self.embedder.aembed_query(tool_name)
+            else:
+                raw_emb = self.embedder.embed_query(tool_name)
+            emb = np.array(raw_emb, dtype=np.float32)
+        self._tool_embedding_cache[tool_name] = emb
+        return emb
 
     async def _resolve_context_key(self, context_text: str) -> str:
         if not self.embedder:
@@ -1340,6 +1709,80 @@ class AsyncBayesianToolRouter:
                 await self.storage.log_selection(trace_id, context_key, best_tool)
                 return best_tool, trace_id
 
+            elif self.hybrid:
+                if self.embedder is None:
+                    raise ValueError("embedder is required for linear bandit mode")
+                
+                if hasattr(self.embedder, "aembed_query"):
+                    x_seq = await self.embedder.aembed_query(context_text)
+                else:
+                    x_seq = self.embedder.embed_query(context_text)
+                
+                x_c = np.array(x_seq, dtype=np.float32)
+                context_key = await self._resolve_context_key(context_text)
+
+                if not candidate_tools:
+                    raise ValueError("Candidate tools list cannot be empty")
+                
+                t_first = await self._get_tool_embedding(candidate_tools[0])
+                d_aug = len(x_c) + len(t_first) + 1
+                
+                precision, reward_vector = await self.storage.aget_linear_params("__shared_hybrid__")
+                if precision is None or reward_vector is None:
+                    precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    reward_vector = np.zeros(d_aug, dtype=np.float32)
+                    reward_vector[-1] = self.lambda_val * 0.5
+
+                if self.diagonal_covariance:
+                    theta_hat = reward_vector / precision
+                else:
+                    theta_hat = np.linalg.solve(precision, reward_vector)
+
+                if self.mode == "lints":
+                    if self.diagonal_covariance:
+                        std_devs = self.exploration_weight / np.sqrt(precision)
+                        theta_sample = np.random.normal(theta_hat, std_devs)
+                    else:
+                        cov = np.linalg.inv(precision)
+                        cov = 0.5 * (cov + cov.T)
+                        try:
+                            L = np.linalg.cholesky(cov)
+                            z = np.random.normal(size=d_aug)
+                            theta_sample = theta_hat + self.exploration_weight * np.dot(L, z)
+                        except np.linalg.LinAlgError:
+                            theta_sample = np.random.multivariate_normal(
+                                theta_hat, (self.exploration_weight ** 2) * cov
+                            )
+
+                best_tool = None
+                highest_score = -float("inf")
+
+                for tool_name in candidate_tools:
+                    t_a = await self._get_tool_embedding(tool_name)
+                    x_augmented = np.concatenate([x_c, t_a, [1.0]])
+
+                    if self.mode == "lints":
+                        score = float(np.dot(x_augmented, theta_sample))
+                    else:
+                        expected_reward = float(np.dot(x_augmented, theta_hat))
+                        if self.diagonal_covariance:
+                            uncertainty = np.sqrt(np.sum((x_augmented ** 2) / precision))
+                        else:
+                            cov = np.linalg.inv(precision)
+                            uncertainty = np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented)))
+                        score = expected_reward + self.exploration_weight * uncertainty
+
+                    if score > highest_score:
+                        highest_score = score
+                        best_tool = tool_name
+
+                if best_tool is None:
+                    best_tool = candidate_tools[0]
+
+                trace_id = self._generate_trace_id(context_key, best_tool)
+                await self.storage.log_selection(trace_id, context_key, best_tool)
+                return best_tool, trace_id
+
             else:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
@@ -1464,6 +1907,44 @@ class AsyncBayesianToolRouter:
                 return await self.storage.decay_and_update(
                     context_key, tool_name, self.decay_factor, reward_val
                 )
+            elif self.hybrid:
+                if self.embedder is None:
+                    raise ValueError("embedder is required for linear bandit mode")
+                
+                if hasattr(self.embedder, "aembed_query"):
+                    x_seq = await self.embedder.aembed_query(context_text)
+                else:
+                    x_seq = self.embedder.embed_query(context_text)
+                
+                x_c = np.array(x_seq, dtype=np.float32)
+                t_a = await self._get_tool_embedding(tool_name)
+                x_augmented = np.concatenate([x_c, t_a, [1.0]])
+
+                prior_alpha, prior_beta = await self.get_prior(context_text, tool_name)
+                prior_p = prior_alpha / (prior_alpha + prior_beta)
+
+                precision, reward_vector = await self.storage.adecay_and_update_linear(
+                    tool_name="__shared_hybrid__",
+                    decay_factor=self.decay_factor,
+                    reward=reward_val,
+                    x_augmented=x_augmented,
+                    lambda_val=self.lambda_val,
+                    prior_p=prior_p,
+                    diagonal=self.diagonal_covariance,
+                )
+
+                if self.diagonal_covariance:
+                    theta_hat = reward_vector / precision
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
+                else:
+                    theta_hat = np.linalg.solve(precision, reward_vector)
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    cov = np.linalg.inv(precision)
+                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
+
+                return expected_reward, uncertainty
+
             else:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
@@ -1552,6 +2033,51 @@ class AsyncBayesianToolRouter:
                 return await self.storage.decay_and_update(
                     context_key, tool_name, self.decay_factor, reward_val
                 )
+            elif self.hybrid:
+                x_seq = await self._context_store.aget_context_vector(context_key)
+                t_a = await self._get_tool_embedding(tool_name)
+                if x_seq is None:
+                    logger.warning(
+                        f"Context vector not found for key {context_key}. Using zero vector as fallback."
+                    )
+                    d = 384
+                    precision, _ = await self.storage.aget_linear_params("__shared_hybrid__")
+                    if precision is not None:
+                        d = len(precision) - len(t_a) - 1
+                    x = np.zeros(d, dtype=np.float32)
+                else:
+                    x = np.array(x_seq, dtype=np.float32)
+                
+                x_augmented = np.concatenate([x, t_a, [1.0]])
+                
+                if tool_name in self.priors:
+                    alpha, beta = self.priors[tool_name]
+                    prior_p = alpha / (alpha + beta)
+                else:
+                    prior_p = 0.5
+                
+                precision, reward_vector = await self.storage.adecay_and_update_linear(
+                    tool_name="__shared_hybrid__",
+                    decay_factor=self.decay_factor,
+                    reward=reward_val,
+                    x_augmented=x_augmented,
+                    lambda_val=self.lambda_val,
+                    prior_p=prior_p,
+                    diagonal=self.diagonal_covariance,
+                )
+                
+                if self.diagonal_covariance:
+                    theta_hat = reward_vector / precision
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
+                else:
+                    theta_hat = np.linalg.solve(precision, reward_vector)
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    cov = np.linalg.inv(precision)
+                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
+                
+                return expected_reward, uncertainty
+
             else:
                 x_seq = await self._context_store.aget_context_vector(context_key)
                 if x_seq is None:
@@ -1618,6 +2144,41 @@ class AsyncBayesianToolRouter:
                 if alpha == 1.0 and beta == 1.0:
                     alpha, beta = await self.get_prior(context_text, tool_name)
                 return alpha, beta
+            elif self.hybrid:
+                if self.embedder is None:
+                    raise ValueError("embedder is required for linear bandit mode")
+                
+                if hasattr(self.embedder, "aembed_query"):
+                    x_seq = await self.embedder.aembed_query(context_text)
+                else:
+                    x_seq = self.embedder.embed_query(context_text)
+                    
+                x_c = np.array(x_seq, dtype=np.float32)
+                t_a = await self._get_tool_embedding(tool_name)
+                x_augmented = np.concatenate([x_c, t_a, [1.0]])
+                d_aug = len(x_augmented)
+
+                prior_alpha, prior_beta = await self.get_prior(context_text, tool_name)
+                prior_p = prior_alpha / (prior_alpha + prior_beta)
+
+                precision, reward_vector = await self.storage.aget_linear_params("__shared_hybrid__")
+                if precision is None or reward_vector is None:
+                    precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    reward_vector = np.zeros(d_aug, dtype=np.float32)
+                    reward_vector[-1] = self.lambda_val * prior_p
+
+                if self.diagonal_covariance:
+                    theta_hat = reward_vector / precision
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
+                else:
+                    theta_hat = np.linalg.solve(precision, reward_vector)
+                    expected_reward = float(np.dot(x_augmented, theta_hat))
+                    cov = np.linalg.inv(precision)
+                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
+
+                return expected_reward, uncertainty
+
             else:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
@@ -1767,6 +2328,87 @@ class AsyncBayesianToolRouter:
                     else:
                         for (ctx_key, tool_name), (alpha, beta) in priors_to_update.items():
                             await self.storage.update_tool_params(ctx_key, tool_name, alpha, beta)
+
+                return results
+
+            elif self.hybrid:
+                if self.embedder is None:
+                    raise ValueError("embedder is required for linear bandit mode")
+                
+                if hasattr(self.embedder, "aembed_queries"):
+                    vectors = await self.embedder.aembed_queries(contexts)
+                elif hasattr(self.embedder, "embed_queries"):
+                    vectors = self.embedder.embed_queries(contexts)
+                elif hasattr(self.embedder, "aembed_query"):
+                    vectors = await asyncio.gather(*(self.embedder.aembed_query(ctx) for ctx in contexts))
+                else:
+                    vectors = [self.embedder.embed_query(ctx) for ctx in contexts]
+
+                context_keys = await self._resolve_context_keys(contexts)
+                
+                t_first = await self._get_tool_embedding(candidate_tools[0])
+                d_aug = len(vectors[0]) + len(t_first) + 1
+                
+                precision, reward_vector = await self.storage.aget_linear_params("__shared_hybrid__")
+                if precision is None or reward_vector is None:
+                    precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    reward_vector = np.zeros(d_aug, dtype=np.float32)
+                    reward_vector[-1] = self.lambda_val * 0.5
+
+                if self.diagonal_covariance:
+                    theta_hat = reward_vector / precision
+                else:
+                    theta_hat = np.linalg.solve(precision, reward_vector)
+
+                results = []
+                for idx, x_seq in enumerate(vectors):
+                    x_c = np.array(x_seq, dtype=np.float32)
+                    context_key = context_keys[idx]
+                    
+                    if self.mode == "lints":
+                        if self.diagonal_covariance:
+                            std_devs = self.exploration_weight / np.sqrt(precision)
+                            theta_sample = np.random.normal(theta_hat, std_devs)
+                        else:
+                            cov = np.linalg.inv(precision)
+                            cov = 0.5 * (cov + cov.T)
+                            try:
+                                L = np.linalg.cholesky(cov)
+                                z = np.random.normal(size=d_aug)
+                                theta_sample = theta_hat + self.exploration_weight * np.dot(L, z)
+                            except np.linalg.LinAlgError:
+                                theta_sample = np.random.multivariate_normal(
+                                    theta_hat, (self.exploration_weight ** 2) * cov
+                                )
+
+                    best_tool = None
+                    highest_score = -float("inf")
+
+                    for tool_name in candidate_tools:
+                        t_a = await self._get_tool_embedding(tool_name)
+                        x_augmented = np.concatenate([x_c, t_a, [1.0]])
+
+                        if self.mode == "lints":
+                            score = float(np.dot(x_augmented, theta_sample))
+                        else:
+                            expected_reward = float(np.dot(x_augmented, theta_hat))
+                            if self.diagonal_covariance:
+                                uncertainty = np.sqrt(np.sum((x_augmented ** 2) / precision))
+                            else:
+                                cov = np.linalg.inv(precision)
+                                uncertainty = np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented)))
+                            score = expected_reward + self.exploration_weight * uncertainty
+
+                        if score > highest_score:
+                            highest_score = score
+                            best_tool = tool_name
+
+                    if best_tool is None:
+                        best_tool = candidate_tools[0]
+
+                    trace_id = self._generate_trace_id(context_key, best_tool)
+                    await self.storage.log_selection(trace_id, context_key, best_tool)
+                    results.append((best_tool, trace_id))
 
                 return results
 
@@ -1945,6 +2587,41 @@ class AsyncBayesianToolRouter:
                 for fb in prepared_feedbacks:
                     updates.append((fb["context_key"], fb["tool_name"], self.decay_factor, fb["reward_val"]))
                 await self.storage.decay_and_update_batch(updates)
+            elif self.hybrid:
+                updates = []
+                for fb in prepared_feedbacks:
+                    tool_name = fb["tool_name"]
+                    reward_val = fb["reward_val"]
+                    t_a = await self._get_tool_embedding(tool_name)
+
+                    if fb["type"] == "trace":
+                        x_seq = await self._context_store.aget_context_vector(fb["context_key"])
+                        if x_seq is None:
+                            logger.warning(
+                                f"Context vector not found for key {fb['context_key']}. Using zero vector as fallback."
+                            )
+                            d = 384
+                            precision, _ = await self.storage.aget_linear_params("__shared_hybrid__")
+                            if precision is not None:
+                                d = len(precision) - len(t_a) - 1
+                            x = np.zeros(d, dtype=np.float32)
+                        else:
+                            x = np.array(x_seq, dtype=np.float32)
+                    else:
+                        x = np.array(fb["vector"], dtype=np.float32)
+
+                    x_augmented = np.concatenate([x, t_a, [1.0]])
+
+                    if tool_name in self.priors:
+                        alpha, beta = self.priors[tool_name]
+                        prior_p = alpha / (alpha + beta)
+                    else:
+                        prior_p = 0.5
+
+                    updates.append(("__shared_hybrid__", self.decay_factor, reward_val, x_augmented, self.lambda_val, prior_p, self.diagonal_covariance))
+
+                await self.storage.adecay_and_update_linear_batch(updates)
+
             else:
                 updates = []
                 for fb in prepared_feedbacks:
