@@ -390,11 +390,11 @@ def create_mcp_server(
 
     Args:
         server_name: The display name of the FastMCP server.
-        db_path: SQLite database path to store tool statistics.
-        sub_tools: A list of candidate sub-tools the router can dynamically select.
+        db_path: SQLite database path to store tool/skill statistics.
+        sub_tools: A list of candidate sub-tools/skills the router can dynamically select.
         tool_executor: A callable taking (selected_tool, task_description) returning
                        either (output, success_bool) or just output (which defaults to success).
-        priors: Preseeded alpha/beta priors for tools to mitigate cold start.
+        priors: Preseeded alpha/beta priors for tools/skills to mitigate cold start.
         contextual_priors: List of context-specific prior rules matching regex or embedding clusters.
     """
     mcp = FastMCP(server_name)
@@ -434,7 +434,7 @@ def create_mcp_server(
     @mcp.tool()
     async def execute_adaptive_action(task_description: str) -> str:
         """
-        Dynamically routes task execution to the most reliable sub-tool.
+        Dynamically routes task execution to the most reliable sub-tool/skill candidate.
 
         Args:
             task_description: A description of the code or integration task to execute.
@@ -458,7 +458,7 @@ def create_mcp_server(
     @mcp.tool()
     async def get_tool_beliefs(context: str) -> str:
         """
-        Retrieve the current posterior alpha and beta beliefs for all tools under a given context.
+        Retrieve the current posterior alpha and beta beliefs for all tools/skills under a given context.
 
         Args:
             context: The context text to look up beliefs for.
@@ -501,11 +501,11 @@ def create_mcp_server(
     async def reset_beliefs(context: str, tool: str) -> str:
         """
         Reset the posterior alpha and beta beliefs back to the default prior (1.0, 1.0)
-        for a specific tool under a given context.
+        for a specific tool/skill under a given context.
 
         Args:
             context: The context text to reset beliefs for.
-            tool: The specific tool name to reset beliefs for.
+            tool: The specific tool/skill name to reset beliefs for.
         """
         if tool not in available_tools:
             return f"Error: Tool '{tool}' is not in the list of available tools ({available_tools})."

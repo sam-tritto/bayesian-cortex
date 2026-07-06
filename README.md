@@ -342,7 +342,7 @@ When operating without an embedder, or if API embedder requests fail, the router
 
 ## Integrations & FastMCP Server
 
-Optimize tool selection in Claude Code or other MCP hosts by registering a Meta-Tool to handle dynamic routing, alongside administrative tools to manage and monitor bandit beliefs.
+Optimize tool/skill selection in Claude Code or other MCP hosts by registering a Meta-Tool to handle dynamic routing, alongside administrative tools to manage and monitor bandit beliefs.
 
 You can configure and expose these endpoints using [create_mcp_server](file:///Users/sam/Locals%20Only/bayes-brain/src/bayes_brain/mcp_server.py#L375):
 
@@ -357,21 +357,21 @@ mcp = create_mcp_server(
 )
 ```
 
-### Registered Tools & Resources
+### Registered Tools, Skills & Resources
 
 | Endpoint | Type | Description |
 | :--- | :--- | :--- |
-| `execute_adaptive_action` | `Tool` | Thompson sampling/UCB routes incoming tasks to the best sub-tool and automatically applies execution feedback. |
-| `get_tool_beliefs` | `Tool` | Retrieve current posterior $\alpha$ and $\beta$ beliefs for all tools under a given context (resolving context-specific priors). |
-| `reset_beliefs` | `Tool` | Reset the beliefs back to the default prior for a tool under a context. |
+| `execute_adaptive_action` | `Tool` | Thompson sampling/UCB routes incoming tasks to the best sub-tool/skill candidate and automatically applies execution feedback. |
+| `get_tool_beliefs` | `Tool` | Retrieve current posterior $\alpha$ and $\beta$ beliefs for all candidate tools/skills under a given context (resolving context-specific priors). |
+| `reset_beliefs` | `Tool` | Reset the beliefs back to the default prior for a tool/skill under a context. |
 | `bayes://metrics` | `Resource` | Exposes a Markdown Dashboard with context clusters, expected success rates, and raw telemetry metrics. |
 
 ### Visual Diagnostics on the Metrics Dashboard
 The `bayes://metrics` dashboard exposes rich, live visuals to monitor routing decisions and distributions in real time:
-* **ASCII Sparklines**: Displays inline unicode block characters (e.g. ` ▂▃▅▇█▆▄▂`) representing the shape of the $\text{Beta}(\alpha, \beta)$ probability distribution next to each tool in the context clusters table.
-* **Beta PDF SVG Charts**: Renders custom inline SVG charts mapping probability density curves for all candidate tools under each context cluster (utilizing SciPy's Beta stats model), complete with colors, legends, labels, and coordinate grids.
-* **Recent Executions Log**: Lists the 20 most recent routing executions chronologically, detailing the Trace ID, Timestamp, Context Cluster, Selected Tool, and Reward feedback outcome.
-* **History MA10 SVG Line Chart**: Renders a chronological line plot tracking the running moving average success rates of candidate tools over time.
+* **ASCII Sparklines**: Displays inline unicode block characters (e.g. ` ▂▃▅▇█▆▄▂`) representing the shape of the $\text{Beta}(\alpha, \beta)$ probability distribution next to each tool/skill in the context clusters table.
+* **Beta PDF SVG Charts**: Renders custom inline SVG charts mapping probability density curves for all candidate tools/skills under each context cluster (utilizing SciPy's Beta stats model), complete with colors, legends, labels, and coordinate grids.
+* **Recent Executions Log**: Lists the 20 most recent routing executions chronologically, detailing the Trace ID, Timestamp, Context Cluster, Selected Tool/Skill, and Reward feedback outcome.
+* **History MA10 SVG Line Chart**: Renders a chronological line plot tracking the running moving average success rates of candidate tools/skills over time.
 
 ---
 
