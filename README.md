@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="BayesianCortex Logo" width="400">
+  <img src="assets/logo.png?v=2" alt="BayesianCortex Logo" width="400">
 </p>
 
 # BayesianCortex: Dynamic Agent Routing via Contextual Bayesian Bandits
