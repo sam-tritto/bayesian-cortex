@@ -97,3 +97,45 @@ async def test_mcp_server_administrative_features():
     finally:
         if os.path.exists(db_path):
             os.remove(db_path)
+
+
+@pytest.mark.anyio
+async def test_mcp_server_contextual_priors():
+    db_path = "test_mcp_bandit_context_priors.db"
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
+    try:
+        contextual_priors = [
+            {
+                "pattern": r"math|calculator|sum",
+                "priors": {
+                    "tool1": (50.0, 1.0),
+                    "tool2": (1.0, 50.0)
+                }
+            }
+        ]
+        
+        mcp = create_mcp_server(
+            server_name="TestBanditContextPriorsServer",
+            db_path=db_path,
+            sub_tools=["tool1", "tool2"],
+            contextual_priors=contextual_priors
+        )
+
+        # Retrieve tool beliefs for a math task context
+        res_tool, _ = await mcp.call_tool("get_tool_beliefs", {"context": "perform calculator sum"})
+        beliefs = json.loads(res_tool[0].text)
+        assert beliefs["tool1"] == {"alpha": 50.0, "beta": 1.0}
+        assert beliefs["tool2"] == {"alpha": 1.0, "beta": 50.0}
+
+        # Retrieve tool beliefs for a non-math task context (should fall back to defaults)
+        res_tool_fallback, _ = await mcp.call_tool("get_tool_beliefs", {"context": "general query"})
+        beliefs_fallback = json.loads(res_tool_fallback[0].text)
+        assert beliefs_fallback["tool1"] == {"alpha": 1.0, "beta": 1.0}
+        assert beliefs_fallback["tool2"] == {"alpha": 1.0, "beta": 1.0}
+
+    finally:
+        if os.path.exists(db_path):
+            os.remove(db_path)
+

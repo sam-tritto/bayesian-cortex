@@ -367,3 +367,75 @@ async def test_async_router_signed_trace_ids():
     with pytest.raises(ValueError):
         router_random2._decode_trace_id(trace_id_rand)
 
+
+@pytest.mark.anyio
+async def test_async_router_contextual_priors():
+    storage = AsyncInMemoryStorage()
+    
+    contextual_priors = [
+        {
+            "pattern": r"math|calculator|sum",
+            "priors": {
+                "calculator": (99.0, 1.0),
+                "search": (1.0, 99.0)
+            }
+        },
+        {
+            "reference_context": "perform general web search query",
+            "priors": {
+                "calculator": (1.0, 99.0),
+                "search": (99.0, 1.0)
+            }
+        }
+    ]
+    
+    embedder = SyncMockEmbedder()
+    
+    router = AsyncBayesianToolRouter(
+        storage=storage,
+        embedder=embedder,
+        contextual_priors=contextual_priors,
+        similarity_threshold=0.85
+    )
+
+    # Test Regex Match
+    prior_calc_alpha, prior_calc_beta = await router.get_prior("solve a math sum", "calculator")
+    assert prior_calc_alpha == 99.0
+    assert prior_calc_beta == 1.0
+
+    prior_search_alpha, prior_search_beta = await router.get_prior("solve a math sum", "search")
+    assert prior_search_alpha == 1.0
+    assert prior_search_beta == 99.0
+
+    # Test Reference Context Embedding Match
+    prior_search_alpha2, prior_search_beta2 = await router.get_prior("search for weather", "search")
+    assert prior_search_alpha2 == 99.0
+    assert prior_search_beta2 == 1.0
+
+    # Test routing with contextual priors (Thompson sampling cold start)
+    storage_clean = AsyncInMemoryStorage()
+    router_clean = AsyncBayesianToolRouter(
+        storage=storage_clean,
+        embedder=embedder,
+        contextual_priors=contextual_priors
+    )
+    chosen = await router_clean.aroute("solve a math sum", ["calculator", "search"])
+    assert chosen == "calculator"
+    
+    # Verify parameter seeding in storage
+    key = await router_clean._resolve_context_key("solve a math sum")
+    alpha_stored, beta_stored = await storage_clean.get_tool_params(key, "calculator")
+    assert alpha_stored == 99.0
+    assert beta_stored == 1.0
+
+    # Route batch
+    storage_batch = AsyncInMemoryStorage()
+    router_batch = AsyncBayesianToolRouter(
+        storage=storage_batch,
+        embedder=embedder,
+        contextual_priors=contextual_priors
+    )
+    results = await router_batch.aroute_batch(["solve a math sum", "search for weather"], ["calculator", "search"])
+    assert results == ["calculator", "search"]
+
+

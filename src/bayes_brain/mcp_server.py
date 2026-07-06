@@ -1,7 +1,7 @@
 import json
 import os
 import sqlite3
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from datetime import datetime, timezone
 import numpy as np
 from scipy.stats import beta as scipy_beta
@@ -377,6 +377,8 @@ def create_mcp_server(
     db_path: str = "mcp_bandit.db",
     sub_tools: Optional[List[str]] = None,
     tool_executor: Optional[Callable[[str, str], Union[Tuple[str, bool], str]]] = None,
+    priors: Optional[Dict[str, Tuple[float, float]]] = None,
+    contextual_priors: Optional[List[Dict[str, Any]]] = None,
 ) -> FastMCP:
     """
     Configure and return a FastMCP server wrapping an AsyncBayesianToolRouter instance.
@@ -387,12 +389,18 @@ def create_mcp_server(
         sub_tools: A list of candidate sub-tools the router can dynamically select.
         tool_executor: A callable taking (selected_tool, task_description) returning
                        either (output, success_bool) or just output (which defaults to success).
+        priors: Preseeded alpha/beta priors for tools to mitigate cold start.
+        contextual_priors: List of context-specific prior rules matching regex or embedding clusters.
     """
     mcp = FastMCP(server_name)
     
     # Use AsyncSQLiteStorage for non-blocking database operations
     storage = AsyncSQLiteStorage(db_path)
-    router = AsyncBayesianToolRouter(storage=storage)
+    router = AsyncBayesianToolRouter(
+        storage=storage,
+        priors=priors,
+        contextual_priors=contextual_priors,
+    )
     
     available_tools = sub_tools or ["local_pytest", "docker_sandbox", "fallback_api"]
 
@@ -471,8 +479,15 @@ def create_mcp_server(
         beliefs = {}
         for tool_name in available_tools:
             alpha, beta = await router.storage.get_tool_params(context_key, tool_name)
-            if alpha == 1.0 and beta == 1.0 and tool_name in router.priors:
-                alpha, beta = router.priors[tool_name]
+            if alpha == 1.0 and beta == 1.0:
+                if hasattr(router, "get_prior"):
+                    import inspect
+                    if inspect.iscoroutinefunction(router.get_prior):
+                        alpha, beta = await router.get_prior(context, tool_name)
+                    else:
+                        alpha, beta = router.get_prior(context, tool_name)
+                elif tool_name in router.priors:
+                    alpha, beta = router.priors[tool_name]
             beliefs[tool_name] = {"alpha": alpha, "beta": beta}
 
         return json.dumps(beliefs, indent=2)

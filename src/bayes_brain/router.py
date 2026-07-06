@@ -5,6 +5,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -41,6 +42,7 @@ class BayesianToolRouter:
         decay_factor: float = 1.0,
         similarity_threshold: float = 0.8,
         priors: Optional[Dict[str, Tuple[float, float]]] = None,
+        contextual_priors: Optional[List[Dict[str, Any]]] = None,
         vector_store: Optional[VectorStoreProtocol] = None,
         fallback_tool: Optional[str] = None,
         telemetry_hook: Optional[Callable[[str, Exception, Dict[str, Any]], None]] = None,
@@ -59,6 +61,7 @@ class BayesianToolRouter:
             decay_factor: Exponential decay / discount factor (gamma) in (0, 1]. Defaults to 1.0.
             similarity_threshold: Cosine similarity threshold for mapping embeddings to contexts.
             priors: Preseeded alpha/beta priors for tools to mitigate cold start (e.g. {"tool": (10, 2)}).
+            contextual_priors: List of context-specific prior rules matching regex or embedding clusters.
             vector_store: Optional custom VectorStoreProtocol implementation.
             mode: routing mode ("clustering", "lints", "linucb").
             exploration_weight: exploration factor (v for lints, alpha for linucb).
@@ -105,6 +108,47 @@ class BayesianToolRouter:
         self.decay_factor = decay_factor
         self.similarity_threshold = similarity_threshold
         self.priors = priors or {}
+
+        # Validate and parse contextual priors
+        self.contextual_priors = []
+        if contextual_priors:
+            for item in contextual_priors:
+                parsed_item = {}
+                if "priors" not in item or not isinstance(item["priors"], dict):
+                    raise ValueError("Each contextual prior must contain a 'priors' dictionary.")
+                
+                priors_map = {}
+                for t_name, params in item["priors"].items():
+                    if not isinstance(params, (list, tuple)) or len(params) != 2:
+                        raise ValueError(f"Prior parameters for tool '{t_name}' must be a tuple/list of (alpha, beta).")
+                    priors_map[t_name] = (float(params[0]), float(params[1]))
+                parsed_item["priors"] = priors_map
+
+                if "pattern" in item:
+                    if not isinstance(item["pattern"], str):
+                        raise ValueError("Contextual prior pattern must be a regex string.")
+                    try:
+                        parsed_item["pattern"] = re.compile(item["pattern"])
+                    except re.error as e:
+                        raise ValueError(f"Invalid regex pattern '{item['pattern']}': {e}")
+                
+                if "reference_context" in item:
+                    if not isinstance(item["reference_context"], str):
+                        raise ValueError("Contextual prior reference_context must be a string.")
+                    parsed_item["reference_context"] = item["reference_context"]
+                
+                if "embedding" in item:
+                    if not isinstance(item["embedding"], (list, tuple, np.ndarray)):
+                        raise ValueError("Contextual prior embedding must be a list/tuple/numpy array of floats.")
+                    parsed_item["embedding"] = np.array(item["embedding"], dtype=np.float32)
+                
+                if "similarity_threshold" in item:
+                    parsed_item["similarity_threshold"] = float(item["similarity_threshold"])
+                
+                if "pattern" not in parsed_item and "reference_context" not in parsed_item and "embedding" not in parsed_item:
+                    raise ValueError("Each contextual prior must specify at least one of 'pattern', 'reference_context', or 'embedding'.")
+                
+                self.contextual_priors.append(parsed_item)
 
         self._custom_vector_store_active = vector_store is not None
         if vector_store is not None:
@@ -179,6 +223,62 @@ class BayesianToolRouter:
             self.storage.save_vector(new_key, vector)
         return new_key
 
+    def get_prior(self, context_text: str, tool_name: str) -> Tuple[float, float]:
+        """
+        Retrieve context-specific prior parameters if a matching contextual prior rule exists.
+        Falls back to global priors or default (1.0, 1.0).
+        """
+        if self.contextual_priors:
+            query_vector = None
+            for prior_item in self.contextual_priors:
+                # 1. Regex pattern matching
+                pattern = prior_item.get("pattern")
+                if pattern is not None:
+                    if pattern.search(context_text):
+                        if tool_name in prior_item["priors"]:
+                            return prior_item["priors"][tool_name]
+                        continue
+
+                # 2. Embedding similarity matching
+                if self.embedder is not None:
+                    ref_vector = None
+                    if "embedding" in prior_item:
+                        ref_vector = prior_item["embedding"]
+                    elif "reference_context" in prior_item:
+                        if "_embedding" not in prior_item:
+                            ref_ctx = prior_item["reference_context"]
+                            try:
+                                prior_item["_embedding"] = np.array(
+                                    self.embedder.embed_query(ref_ctx), dtype=np.float32
+                                )
+                            except Exception as e:
+                                logger.warning(f"Failed to generate embedding for reference context '{ref_ctx}': {e}")
+                                prior_item["_embedding"] = None
+                        ref_vector = prior_item["_embedding"]
+
+                    if ref_vector is not None:
+                        if query_vector is None:
+                            try:
+                                query_vector = np.array(
+                                    self.embedder.embed_query(context_text), dtype=np.float32
+                                )
+                            except Exception as e:
+                                logger.warning(f"Failed to generate embedding for query context '{context_text}': {e}")
+                                query_vector = np.array([], dtype=np.float32)
+
+                        if len(query_vector) > 0 and len(ref_vector) > 0:
+                            q_norm = np.linalg.norm(query_vector)
+                            r_norm = np.linalg.norm(ref_vector)
+                            if q_norm > 0.0 and r_norm > 0.0:
+                                similarity = float(np.dot(query_vector, ref_vector) / (q_norm * r_norm))
+                                threshold = prior_item.get("similarity_threshold", self.similarity_threshold)
+                                if similarity >= threshold:
+                                    if tool_name in prior_item["priors"]:
+                                        return prior_item["priors"][tool_name]
+                                    continue
+        # Fall back to global priors
+        return self.priors.get(tool_name, (1.0, 1.0))
+
     def _generate_trace_id(self, context_key: str, tool_name: str) -> str:
         """Encodes context key and tool name into a stateless token and signs it using HMAC."""
         payload = {
@@ -244,9 +344,11 @@ class BayesianToolRouter:
                     alpha, beta = self.storage.get_tool_params(context_key, tool_name)
 
                     # Check for seeded priors on cold start
-                    if alpha == 1.0 and beta == 1.0 and tool_name in self.priors:
-                        alpha, beta = self.priors[tool_name]
-                        self.storage.update_tool_params(context_key, tool_name, alpha, beta)
+                    if alpha == 1.0 and beta == 1.0:
+                        prior_alpha, prior_beta = self.get_prior(context_text, tool_name)
+                        if prior_alpha != 1.0 or prior_beta != 1.0:
+                            alpha, beta = prior_alpha, prior_beta
+                            self.storage.update_tool_params(context_key, tool_name, alpha, beta)
 
                     # Sample belief matching beta-binomial posterior
                     sampled_score = np.random.beta(alpha, beta)
@@ -275,11 +377,8 @@ class BayesianToolRouter:
                 highest_score = -float("inf")
                 
                 for tool_name in candidate_tools:
-                    if tool_name in self.priors:
-                        alpha, beta = self.priors[tool_name]
-                        prior_p = alpha / (alpha + beta)
-                    else:
-                        prior_p = 0.5
+                    prior_alpha, prior_beta = self.get_prior(context_text, tool_name)
+                    prior_p = prior_alpha / (prior_alpha + prior_beta)
                     
                     precision, reward_vector = self.storage.get_linear_params(tool_name)
                     if precision is None or reward_vector is None:
@@ -546,7 +645,10 @@ class BayesianToolRouter:
         try:
             context_key = self._resolve_context_key(context_text)
             if self.mode == "clustering":
-                return self.storage.get_tool_params(context_key, tool_name)
+                alpha, beta = self.storage.get_tool_params(context_key, tool_name)
+                if alpha == 1.0 and beta == 1.0:
+                    alpha, beta = self.get_prior(context_text, tool_name)
+                return alpha, beta
             else:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
@@ -554,11 +656,8 @@ class BayesianToolRouter:
                 x_augmented = np.append(x, 1.0)
                 d_aug = len(x_augmented)
                 
-                if tool_name in self.priors:
-                    alpha, beta = self.priors[tool_name]
-                    prior_p = alpha / (alpha + beta)
-                else:
-                    prior_p = 0.5
+                prior_alpha, prior_beta = self.get_prior(context_text, tool_name)
+                prior_p = prior_alpha / (prior_alpha + prior_beta)
                 
                 precision, reward_vector = self.storage.get_linear_params(tool_name)
                 if precision is None or reward_vector is None:
@@ -656,16 +755,19 @@ class BayesianToolRouter:
                 
                 priors_to_update = {}
                 results = []
-                for context_key in context_keys:
+                for idx, context_key in enumerate(context_keys):
+                    context_text = contexts[idx]
                     best_tool = None
                     highest_sample = -1.0
 
                     for tool_name in candidate_tools:
                         alpha, beta = param_dict.get((context_key, tool_name), (1.0, 1.0))
 
-                        if alpha == 1.0 and beta == 1.0 and tool_name in self.priors:
-                            alpha, beta = self.priors[tool_name]
-                            priors_to_update[(context_key, tool_name)] = (alpha, beta)
+                        if alpha == 1.0 and beta == 1.0:
+                            prior_alpha, prior_beta = self.get_prior(context_text, tool_name)
+                            if prior_alpha != 1.0 or prior_beta != 1.0:
+                                alpha, beta = prior_alpha, prior_beta
+                                priors_to_update[(context_key, tool_name)] = (alpha, beta)
 
                         sampled_score = np.random.beta(alpha, beta)
 
@@ -713,16 +815,14 @@ class BayesianToolRouter:
                     x_augmented = np.append(x, 1.0)
                     d_aug = d + 1
                     context_key = context_keys[idx]
+                    context_text = contexts[idx]
                     
                     best_tool = None
                     highest_score = -float("inf")
                     
                     for tool_name in candidate_tools:
-                        if tool_name in self.priors:
-                            alpha, beta = self.priors[tool_name]
-                            prior_p = alpha / (alpha + beta)
-                        else:
-                            prior_p = 0.5
+                        prior_alpha, prior_beta = self.get_prior(context_text, tool_name)
+                        prior_p = prior_alpha / (prior_alpha + prior_beta)
                         
                         precision, reward_vector = tool_params.get(tool_name, (None, None))
                         if precision is None or reward_vector is None:
@@ -924,6 +1024,7 @@ class AsyncBayesianToolRouter:
         decay_factor: float = 1.0,
         similarity_threshold: float = 0.8,
         priors: Optional[Dict[str, Tuple[float, float]]] = None,
+        contextual_priors: Optional[List[Dict[str, Any]]] = None,
         vector_store: Optional[AsyncVectorStoreProtocol] = None,
         fallback_tool: Optional[str] = None,
         telemetry_hook: Optional[Callable[[str, Exception, Dict[str, Any]], Any]] = None,
@@ -975,6 +1076,47 @@ class AsyncBayesianToolRouter:
         self.decay_factor = decay_factor
         self.similarity_threshold = similarity_threshold
         self.priors = priors or {}
+
+        # Validate and parse contextual priors
+        self.contextual_priors = []
+        if contextual_priors:
+            for item in contextual_priors:
+                parsed_item = {}
+                if "priors" not in item or not isinstance(item["priors"], dict):
+                    raise ValueError("Each contextual prior must contain a 'priors' dictionary.")
+                
+                priors_map = {}
+                for t_name, params in item["priors"].items():
+                    if not isinstance(params, (list, tuple)) or len(params) != 2:
+                        raise ValueError(f"Prior parameters for tool '{t_name}' must be a tuple/list of (alpha, beta).")
+                    priors_map[t_name] = (float(params[0]), float(params[1]))
+                parsed_item["priors"] = priors_map
+
+                if "pattern" in item:
+                    if not isinstance(item["pattern"], str):
+                        raise ValueError("Contextual prior pattern must be a regex string.")
+                    try:
+                        parsed_item["pattern"] = re.compile(item["pattern"])
+                    except re.error as e:
+                        raise ValueError(f"Invalid regex pattern '{item['pattern']}': {e}")
+                
+                if "reference_context" in item:
+                    if not isinstance(item["reference_context"], str):
+                        raise ValueError("Contextual prior reference_context must be a string.")
+                    parsed_item["reference_context"] = item["reference_context"]
+                
+                if "embedding" in item:
+                    if not isinstance(item["embedding"], (list, tuple, np.ndarray)):
+                        raise ValueError("Contextual prior embedding must be a list/tuple/numpy array of floats.")
+                    parsed_item["embedding"] = np.array(item["embedding"], dtype=np.float32)
+                
+                if "similarity_threshold" in item:
+                    parsed_item["similarity_threshold"] = float(item["similarity_threshold"])
+                
+                if "pattern" not in parsed_item and "reference_context" not in parsed_item and "embedding" not in parsed_item:
+                    raise ValueError("Each contextual prior must specify at least one of 'pattern', 'reference_context', or 'embedding'.")
+                
+                self.contextual_priors.append(parsed_item)
 
         self._custom_vector_store_active = vector_store is not None
         if vector_store is not None:
@@ -1050,6 +1192,66 @@ class AsyncBayesianToolRouter:
             await self.storage.save_vector(new_key, vector)
         return new_key
 
+    async def get_prior(self, context_text: str, tool_name: str) -> Tuple[float, float]:
+        """
+        Retrieve context-specific prior parameters if a matching contextual prior rule exists.
+        Falls back to global priors or default (1.0, 1.0).
+        """
+        if self.contextual_priors:
+            query_vector = None
+            for prior_item in self.contextual_priors:
+                # 1. Regex pattern matching
+                pattern = prior_item.get("pattern")
+                if pattern is not None:
+                    if pattern.search(context_text):
+                        if tool_name in prior_item["priors"]:
+                            return prior_item["priors"][tool_name]
+                        continue
+
+                # 2. Embedding similarity matching
+                if self.embedder is not None:
+                    ref_vector = None
+                    if "embedding" in prior_item:
+                        ref_vector = prior_item["embedding"]
+                    elif "reference_context" in prior_item:
+                        if "_embedding" not in prior_item:
+                            ref_ctx = prior_item["reference_context"]
+                            try:
+                                if hasattr(self.embedder, "aembed_query"):
+                                    vector = await self.embedder.aembed_query(ref_ctx)
+                                else:
+                                    vector = self.embedder.embed_query(ref_ctx)
+                                prior_item["_embedding"] = np.array(vector, dtype=np.float32)
+                            except Exception as e:
+                                logger.warning(f"Failed to generate embedding for reference context '{ref_ctx}': {e}")
+                                prior_item["_embedding"] = None
+                        ref_vector = prior_item["_embedding"]
+
+                    if ref_vector is not None:
+                        if query_vector is None:
+                            try:
+                                if hasattr(self.embedder, "aembed_query"):
+                                    vector = await self.embedder.aembed_query(context_text)
+                                else:
+                                    vector = self.embedder.embed_query(context_text)
+                                query_vector = np.array(vector, dtype=np.float32)
+                            except Exception as e:
+                                logger.warning(f"Failed to generate embedding for query context '{context_text}': {e}")
+                                query_vector = np.array([], dtype=np.float32)
+
+                        if len(query_vector) > 0 and len(ref_vector) > 0:
+                            q_norm = np.linalg.norm(query_vector)
+                            r_norm = np.linalg.norm(ref_vector)
+                            if q_norm > 0.0 and r_norm > 0.0:
+                                similarity = float(np.dot(query_vector, ref_vector) / (q_norm * r_norm))
+                                threshold = prior_item.get("similarity_threshold", self.similarity_threshold)
+                                if similarity >= threshold:
+                                    if tool_name in prior_item["priors"]:
+                                        return prior_item["priors"][tool_name]
+                                    continue
+        # Fall back to global priors
+        return self.priors.get(tool_name, (1.0, 1.0))
+
     def _generate_trace_id(self, context_key: str, tool_name: str) -> str:
         """Encodes context key and tool name into a stateless token and signs it using HMAC."""
         payload = {
@@ -1119,9 +1321,11 @@ class AsyncBayesianToolRouter:
                 for tool_name in candidate_tools:
                     alpha, beta = await self.storage.get_tool_params(context_key, tool_name)
 
-                    if alpha == 1.0 and beta == 1.0 and tool_name in self.priors:
-                        alpha, beta = self.priors[tool_name]
-                        await self.storage.update_tool_params(context_key, tool_name, alpha, beta)
+                    if alpha == 1.0 and beta == 1.0:
+                        prior_alpha, prior_beta = await self.get_prior(context_text, tool_name)
+                        if prior_alpha != 1.0 or prior_beta != 1.0:
+                            alpha, beta = prior_alpha, prior_beta
+                            await self.storage.update_tool_params(context_key, tool_name, alpha, beta)
 
                     sampled_score = np.random.beta(alpha, beta)
 
@@ -1155,11 +1359,8 @@ class AsyncBayesianToolRouter:
                 highest_score = -float("inf")
                 
                 for tool_name in candidate_tools:
-                    if tool_name in self.priors:
-                        alpha, beta = self.priors[tool_name]
-                        prior_p = alpha / (alpha + beta)
-                    else:
-                        prior_p = 0.5
+                    prior_alpha, prior_beta = await self.get_prior(context_text, tool_name)
+                    prior_p = prior_alpha / (prior_alpha + prior_beta)
                     
                     precision, reward_vector = await self.storage.aget_linear_params(tool_name)
                     if precision is None or reward_vector is None:
@@ -1413,7 +1614,10 @@ class AsyncBayesianToolRouter:
         try:
             context_key = await self._resolve_context_key(context_text)
             if self.mode == "clustering":
-                return await self.storage.get_tool_params(context_key, tool_name)
+                alpha, beta = await self.storage.get_tool_params(context_key, tool_name)
+                if alpha == 1.0 and beta == 1.0:
+                    alpha, beta = await self.get_prior(context_text, tool_name)
+                return alpha, beta
             else:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
@@ -1427,11 +1631,8 @@ class AsyncBayesianToolRouter:
                 x_augmented = np.append(x, 1.0)
                 d_aug = len(x_augmented)
                 
-                if tool_name in self.priors:
-                    alpha, beta = self.priors[tool_name]
-                    prior_p = alpha / (alpha + beta)
-                else:
-                    prior_p = 0.5
+                prior_alpha, prior_beta = await self.get_prior(context_text, tool_name)
+                prior_p = prior_alpha / (prior_alpha + prior_beta)
                 
                 precision, reward_vector = await self.storage.aget_linear_params(tool_name)
                 if precision is None or reward_vector is None:
@@ -1533,16 +1734,19 @@ class AsyncBayesianToolRouter:
                 
                 priors_to_update = {}
                 results = []
-                for context_key in context_keys:
+                for idx, context_key in enumerate(context_keys):
+                    context_text = contexts[idx]
                     best_tool = None
                     highest_sample = -1.0
 
                     for tool_name in candidate_tools:
                         alpha, beta = param_dict.get((context_key, tool_name), (1.0, 1.0))
 
-                        if alpha == 1.0 and beta == 1.0 and tool_name in self.priors:
-                            alpha, beta = self.priors[tool_name]
-                            priors_to_update[(context_key, tool_name)] = (alpha, beta)
+                        if alpha == 1.0 and beta == 1.0:
+                            prior_alpha, prior_beta = await self.get_prior(context_text, tool_name)
+                            if prior_alpha != 1.0 or prior_beta != 1.0:
+                                alpha, beta = prior_alpha, prior_beta
+                                priors_to_update[(context_key, tool_name)] = (alpha, beta)
 
                         sampled_score = np.random.beta(alpha, beta)
 
@@ -1594,16 +1798,14 @@ class AsyncBayesianToolRouter:
                     x_augmented = np.append(x, 1.0)
                     d_aug = d + 1
                     context_key = context_keys[idx]
+                    context_text = contexts[idx]
                     
                     best_tool = None
                     highest_score = -float("inf")
                     
                     for tool_name in candidate_tools:
-                        if tool_name in self.priors:
-                            alpha, beta = self.priors[tool_name]
-                            prior_p = alpha / (alpha + beta)
-                        else:
-                            prior_p = 0.5
+                        prior_alpha, prior_beta = await self.get_prior(context_text, tool_name)
+                        prior_p = prior_alpha / (prior_alpha + prior_beta)
                         
                         precision, reward_vector = tool_params.get(tool_name, (None, None))
                         if precision is None or reward_vector is None:

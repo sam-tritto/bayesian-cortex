@@ -428,4 +428,114 @@ def test_router_signed_trace_ids():
         router_random2._decode_trace_id(trace_id_rand)
 
 
+def test_router_contextual_priors():
+    storage = InMemoryStorage()
+    
+    # 1. Validation test
+    with pytest.raises(ValueError, match="Each contextual prior must contain a 'priors' dictionary"):
+        BayesianToolRouter(storage=storage, contextual_priors=[{"pattern": "math"}])
+
+    with pytest.raises(ValueError, match="Prior parameters for tool .* must be a tuple/list"):
+        BayesianToolRouter(storage=storage, contextual_priors=[{
+            "pattern": "math",
+            "priors": {"calculator": (10,)}
+        }])
+
+    with pytest.raises(ValueError, match="Each contextual prior must specify at least one of"):
+        BayesianToolRouter(storage=storage, contextual_priors=[{
+            "priors": {"calculator": (10, 1)}
+        }])
+
+    # 2. Setup router with regex-based prior
+    contextual_priors = [
+        {
+            "pattern": r"math|calculator|sum",
+            "priors": {
+                "calculator": (99.0, 1.0),
+                "search": (1.0, 99.0)
+            }
+        },
+        {
+            "reference_context": "perform general web search query",
+            "priors": {
+                "calculator": (1.0, 99.0),
+                "search": (99.0, 1.0)
+            }
+        },
+        {
+            "embedding": [1.0, 0.0],
+            "priors": {
+                "calculator": (1.0, 50.0),
+                "search": (50.0, 1.0)
+            }
+        }
+    ]
+    
+    embedder = MockEmbedder()
+    router = BayesianToolRouter(
+        storage=storage,
+        embedder=embedder,
+        contextual_priors=contextual_priors,
+        similarity_threshold=0.85
+    )
+
+    # Test Regex Match
+    prior_calc_alpha, prior_calc_beta = router.get_prior("solve a math sum", "calculator")
+    assert prior_calc_alpha == 99.0
+    assert prior_calc_beta == 1.0
+
+    prior_search_alpha, prior_search_beta = router.get_prior("solve a math sum", "search")
+    assert prior_search_alpha == 1.0
+    assert prior_search_beta == 99.0
+
+    # Test Reference Context Embedding Match
+    prior_search_alpha2, prior_search_beta2 = router.get_prior("search for weather", "search")
+    assert prior_search_alpha2 == 99.0
+    assert prior_search_beta2 == 1.0
+
+    # Test Precomputed Embedding Match
+    router_embed = BayesianToolRouter(
+        storage=InMemoryStorage(),
+        embedder=embedder,
+        contextual_priors=[
+            {
+                "embedding": [0.0, 1.0],
+                "priors": {
+                    "calculator": (88.0, 12.0)
+                }
+            }
+        ]
+    )
+    calc_alpha, calc_beta = router_embed.get_prior("math help", "calculator")
+    assert calc_alpha == 88.0
+    assert calc_beta == 12.0
+
+    # Test routing with contextual priors (Thompson sampling cold start)
+    storage_clean = InMemoryStorage()
+    router_clean = BayesianToolRouter(
+        storage=storage_clean,
+        embedder=embedder,
+        contextual_priors=contextual_priors
+    )
+    chosen = router_clean.route("solve a math sum", ["calculator", "search"])
+    assert chosen == "calculator"
+    
+    # Verify parameter seeding in storage
+    key = router_clean._resolve_context_key("solve a math sum")
+    alpha_stored, beta_stored = storage_clean.get_tool_params(key, "calculator")
+    assert alpha_stored == 99.0
+    assert beta_stored == 1.0
+
+    # Route batch
+    storage_batch = InMemoryStorage()
+    router_batch = BayesianToolRouter(
+        storage=storage_batch,
+        embedder=embedder,
+        contextual_priors=contextual_priors
+    )
+    results = router_batch.route_batch(["solve a math sum", "search for weather"], ["calculator", "search"])
+    assert results == ["calculator", "search"]
+
+
+
 
