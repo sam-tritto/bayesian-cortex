@@ -259,6 +259,7 @@ class BayesianToolRouter:
                     best_tool = candidate_tools[0]
 
                 trace_id = self._generate_trace_id(context_key, best_tool)
+                self.storage.log_selection(trace_id, context_key, best_tool)
                 return best_tool, trace_id
 
             else:
@@ -324,6 +325,7 @@ class BayesianToolRouter:
                     best_tool = candidate_tools[0]
 
                 trace_id = self._generate_trace_id(context_key, best_tool)
+                self.storage.log_selection(trace_id, context_key, best_tool)
                 return best_tool, trace_id
 
         except Exception as e:
@@ -349,6 +351,7 @@ class BayesianToolRouter:
                 fallback_choice = candidate_tools[0]
 
             fallback_trace_id = self._generate_trace_id("fallback_ctx", fallback_choice)
+            self.storage.log_selection(fallback_trace_id, "fallback_ctx", fallback_choice)
             return fallback_choice, fallback_trace_id
 
     def feedback(
@@ -470,6 +473,7 @@ class BayesianToolRouter:
 
         try:
             context_key, tool_name = self._decode_trace_id(trace_id)
+            self.storage.log_feedback(trace_id, reward_val)
             if self.mode == "clustering":
                 return self.storage.decay_and_update(
                     context_key, tool_name, self.decay_factor, reward_val
@@ -673,6 +677,7 @@ class BayesianToolRouter:
                         best_tool = candidate_tools[0]
 
                     trace_id = self._generate_trace_id(context_key, best_tool)
+                    self.storage.log_selection(trace_id, context_key, best_tool)
                     results.append((best_tool, trace_id))
 
                 if priors_to_update:
@@ -763,6 +768,7 @@ class BayesianToolRouter:
                         best_tool = candidate_tools[0]
 
                     trace_id = self._generate_trace_id(context_key, best_tool)
+                    self.storage.log_selection(trace_id, context_key, best_tool)
                     results.append((best_tool, trace_id))
 
                 return results
@@ -784,6 +790,8 @@ class BayesianToolRouter:
 
             fallback_choice = self.fallback_tool if (self.fallback_tool and self.fallback_tool in candidate_tools) else candidate_tools[0]
             fallback_trace_id = self._generate_trace_id("fallback_ctx", fallback_choice)
+            for _ in contexts:
+                self.storage.log_selection(fallback_trace_id, "fallback_ctx", fallback_choice)
             return [(fallback_choice, fallback_trace_id)] * len(contexts)
 
     def feedback_batch(self, feedbacks: List[Dict[str, Any]]) -> None:
@@ -885,6 +893,13 @@ class BayesianToolRouter:
                     updates.append((tool_name, self.decay_factor, reward_val, x_augmented, self.lambda_val, prior_p, self.diagonal_covariance))
                     
                 self.storage.decay_and_update_linear_batch(updates)
+
+            # Log trace feedback
+            for fb in feedbacks:
+                trace_id = fb.get("trace_id")
+                if trace_id is not None:
+                    reward_val = float(fb.get("reward")) if fb.get("reward") is not None else (1.0 if fb.get("success") else 0.0)
+                    self.storage.log_feedback(trace_id, reward_val)
 
         except Exception as e:
             logger.exception("BayesianToolRouter batch feedback submission failed.")
@@ -1118,6 +1133,7 @@ class AsyncBayesianToolRouter:
                     best_tool = candidate_tools[0]
 
                 trace_id = self._generate_trace_id(context_key, best_tool)
+                await self.storage.log_selection(trace_id, context_key, best_tool)
                 return best_tool, trace_id
 
             else:
@@ -1189,6 +1205,7 @@ class AsyncBayesianToolRouter:
                     best_tool = candidate_tools[0]
 
                 trace_id = self._generate_trace_id(context_key, best_tool)
+                await self.storage.log_selection(trace_id, context_key, best_tool)
                 return best_tool, trace_id
 
         except Exception as e:
@@ -1210,6 +1227,7 @@ class AsyncBayesianToolRouter:
                 fallback_choice = candidate_tools[0]
 
             fallback_trace_id = self._generate_trace_id("fallback_ctx", fallback_choice)
+            await self.storage.log_selection(fallback_trace_id, "fallback_ctx", fallback_choice)
             return fallback_choice, fallback_trace_id
 
     async def afeedback(
@@ -1328,6 +1346,7 @@ class AsyncBayesianToolRouter:
 
         try:
             context_key, tool_name = self._decode_trace_id(trace_id)
+            await self.storage.log_feedback(trace_id, reward_val)
             if self.mode == "clustering":
                 return await self.storage.decay_and_update(
                     context_key, tool_name, self.decay_factor, reward_val
@@ -1535,6 +1554,7 @@ class AsyncBayesianToolRouter:
                         best_tool = candidate_tools[0]
 
                     trace_id = self._generate_trace_id(context_key, best_tool)
+                    await self.storage.log_selection(trace_id, context_key, best_tool)
                     results.append((best_tool, trace_id))
 
                 if priors_to_update:
@@ -1629,6 +1649,7 @@ class AsyncBayesianToolRouter:
                         best_tool = candidate_tools[0]
 
                     trace_id = self._generate_trace_id(context_key, best_tool)
+                    await self.storage.log_selection(trace_id, context_key, best_tool)
                     results.append((best_tool, trace_id))
 
                 return results
@@ -1646,6 +1667,8 @@ class AsyncBayesianToolRouter:
 
             fallback_choice = self.fallback_tool if (self.fallback_tool and self.fallback_tool in candidate_tools) else candidate_tools[0]
             fallback_trace_id = self._generate_trace_id("fallback_ctx", fallback_choice)
+            for _ in contexts:
+                await self.storage.log_selection(fallback_trace_id, "fallback_ctx", fallback_choice)
             return [(fallback_choice, fallback_trace_id)] * len(contexts)
 
     async def afeedback_batch(self, feedbacks: List[Dict[str, Any]]) -> None:
@@ -1753,6 +1776,13 @@ class AsyncBayesianToolRouter:
                     updates.append((tool_name, self.decay_factor, reward_val, x_augmented, self.lambda_val, prior_p, self.diagonal_covariance))
                     
                 await self.storage.adecay_and_update_linear_batch(updates)
+
+            # Log trace feedback
+            for fb in feedbacks:
+                trace_id = fb.get("trace_id")
+                if trace_id is not None:
+                    reward_val = float(fb.get("reward")) if fb.get("reward") is not None else (1.0 if fb.get("success") else 0.0)
+                    await self.storage.log_feedback(trace_id, reward_val)
 
         except Exception as e:
             logger.exception("AsyncBayesianToolRouter batch feedback submission failed.")

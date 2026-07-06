@@ -1,11 +1,13 @@
 import abc
 import asyncio
+from datetime import datetime, timezone
 import json
 import sqlite3
 import threading
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+
 
 class BaseStorage(abc.ABC):
     """Abstract base class defining the storage backend interface for BayesBrain."""
@@ -169,6 +171,20 @@ class BaseStorage(abc.ABC):
         for key, vector in vectors.items():
             self.save_vector(key, vector)
 
+    @abc.abstractmethod
+    def log_selection(self, trace_id: str, context_key: str, tool_name: str) -> None:
+        """Log a tool selection event."""
+        pass
+
+    @abc.abstractmethod
+    def log_feedback(self, trace_id: str, reward: float) -> None:
+        """Log reward feedback for a selection event."""
+        pass
+
+    @abc.abstractmethod
+    def get_selection_logs(self) -> List[Dict[str, Any]]:
+        """Retrieve all selection logs, ordered by timestamp ascending."""
+        return []
 
 
 class InMemoryStorage(BaseStorage):
@@ -182,6 +198,7 @@ class InMemoryStorage(BaseStorage):
         self._metadata: dict[str, str] = {}
         self._vectors: dict[str, List[float]] = {}
         self._linear_data: dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+        self._selection_logs: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
 
     def get_tool_params(self, context_key: str, tool_name: str) -> Tuple[float, float]:
@@ -218,15 +235,8 @@ class InMemoryStorage(BaseStorage):
     def load_all_vectors(self) -> Dict[str, List[float]]:
         with self._lock:
             if not self._vectors:
-                # Backwards compatibility migration check
-                serialized = self._metadata.get("vector_context_store")
-                if serialized:
-                    try:
-                        data = json.loads(serialized)
-                        self._vectors = {k: list(v) for k, v in data.items()}
-                    except Exception:
-                        pass
-            return dict(self._vectors)
+                return super().load_all_vectors()
+            return {k: list(v) for k, v in self._vectors.items()}
 
     def save_vector(self, context_key: str, vector: Sequence[float]) -> None:
         with self._lock:
@@ -345,6 +355,26 @@ class InMemoryStorage(BaseStorage):
             for key, vector in vectors.items():
                 self._vectors[key] = list(vector)
 
+    def log_selection(self, trace_id: str, context_key: str, tool_name: str) -> None:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            if trace_id not in self._selection_logs:
+                self._selection_logs[trace_id] = {
+                    "trace_id": trace_id,
+                    "timestamp": timestamp,
+                    "context_key": context_key,
+                    "tool_name": tool_name,
+                    "reward": None,
+                }
+
+    def log_feedback(self, trace_id: str, reward: float) -> None:
+        with self._lock:
+            if trace_id in self._selection_logs:
+                self._selection_logs[trace_id]["reward"] = reward
+
+    def get_selection_logs(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return sorted(self._selection_logs.values(), key=lambda x: x["timestamp"])
 
 
 class SQLiteStorage(BaseStorage):
@@ -392,6 +422,17 @@ class SQLiteStorage(BaseStorage):
                         tool_name TEXT PRIMARY KEY,
                         precision_matrix TEXT,
                         reward_vector TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS selection_log (
+                        trace_id TEXT PRIMARY KEY,
+                        timestamp TEXT,
+                        context_key TEXT,
+                        tool_name TEXT,
+                        reward REAL
                     )
                     """
                 )
@@ -804,6 +845,42 @@ class SQLiteStorage(BaseStorage):
                 [(k, json.dumps(list(v))) for k, v in vectors.items()]
             )
 
+    def log_selection(self, trace_id: str, context_key: str, tool_name: str) -> None:
+        conn = self._get_conn()
+        timestamp = datetime.now(timezone.utc).isoformat()
+        with conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO selection_log (trace_id, timestamp, context_key, tool_name, reward)
+                VALUES (?, ?, ?, ?, NULL)
+                """,
+                (trace_id, timestamp, context_key, tool_name),
+            )
+
+    def log_feedback(self, trace_id: str, reward: float) -> None:
+        conn = self._get_conn()
+        with conn:
+            conn.execute(
+                "UPDATE selection_log SET reward = ? WHERE trace_id = ?",
+                (reward, trace_id),
+            )
+
+    def get_selection_logs(self) -> List[Dict[str, Any]]:
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT trace_id, timestamp, context_key, tool_name, reward FROM selection_log ORDER BY timestamp ASC"
+        )
+        logs = []
+        for row in cursor.fetchall():
+            logs.append({
+                "trace_id": row[0],
+                "timestamp": row[1],
+                "context_key": row[2],
+                "tool_name": row[3],
+                "reward": float(row[4]) if row[4] is not None else None,
+            })
+        return logs
 
 
 class RedisStorage(BaseStorage):
@@ -1135,6 +1212,44 @@ class RedisStorage(BaseStorage):
             )
         pipe.execute()
 
+    def log_selection(self, trace_id: str, context_key: str, tool_name: str) -> None:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        key = f"{self.prefix}log:{trace_id}"
+        self.client.hset(key, mapping={
+            "trace_id": trace_id,
+            "timestamp": timestamp,
+            "context_key": context_key,
+            "tool_name": tool_name,
+        })
+        self.client.sadd(f"{self.prefix}log_ids", trace_id)
+
+    def log_feedback(self, trace_id: str, reward: float) -> None:
+        key = f"{self.prefix}log:{trace_id}"
+        if self.client.exists(key):
+            self.client.hset(key, "reward", str(reward))
+
+    def get_selection_logs(self) -> List[Dict[str, Any]]:
+        trace_ids = self.client.smembers(f"{self.prefix}log_ids")
+        logs = []
+        for tid in trace_ids:
+            tid_str = tid.decode("utf-8") if isinstance(tid, bytes) else str(tid)
+            key = f"{self.prefix}log:{tid_str}"
+            data = self.client.hgetall(key)
+            if data:
+                decoded = {}
+                for k, v in data.items():
+                    k_str = k.decode("utf-8") if isinstance(k, bytes) else str(k)
+                    v_str = v.decode("utf-8") if isinstance(v, bytes) else str(v)
+                    decoded[k_str] = v_str
+                
+                logs.append({
+                    "trace_id": decoded.get("trace_id", tid_str),
+                    "timestamp": decoded.get("timestamp", ""),
+                    "context_key": decoded.get("context_key", ""),
+                    "tool_name": decoded.get("tool_name", ""),
+                    "reward": float(decoded["reward"]) if decoded.get("reward") is not None else None,
+                })
+        return sorted(logs, key=lambda x: x["timestamp"])
 
 
 class AsyncBaseStorage(abc.ABC):
@@ -1305,6 +1420,20 @@ class AsyncBaseStorage(abc.ABC):
         for key, vector in vectors.items():
             await self.save_vector(key, vector)
 
+    @abc.abstractmethod
+    async def log_selection(self, trace_id: str, context_key: str, tool_name: str) -> None:
+        """Log a tool selection event."""
+        pass
+
+    @abc.abstractmethod
+    async def log_feedback(self, trace_id: str, reward: float) -> None:
+        """Log reward feedback for a selection event."""
+        pass
+
+    @abc.abstractmethod
+    async def get_selection_logs(self) -> List[Dict[str, Any]]:
+        """Retrieve all selection logs, ordered by timestamp ascending."""
+        return []
 
 
 class AsyncInMemoryStorage(AsyncBaseStorage):
@@ -1317,6 +1446,7 @@ class AsyncInMemoryStorage(AsyncBaseStorage):
         self._metadata: Dict[str, str] = {}
         self._vectors: Dict[str, List[float]] = {}
         self._linear_data: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+        self._selection_logs: Dict[str, Dict[str, Any]] = {}
         self._lock = asyncio.Lock()
 
     async def get_tool_params(self, context_key: str, tool_name: str) -> Tuple[float, float]:
@@ -1480,6 +1610,26 @@ class AsyncInMemoryStorage(AsyncBaseStorage):
             for key, vector in vectors.items():
                 self._vectors[key] = list(vector)
 
+    async def log_selection(self, trace_id: str, context_key: str, tool_name: str) -> None:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        async with self._lock:
+            if trace_id not in self._selection_logs:
+                self._selection_logs[trace_id] = {
+                    "trace_id": trace_id,
+                    "timestamp": timestamp,
+                    "context_key": context_key,
+                    "tool_name": tool_name,
+                    "reward": None,
+                }
+
+    async def log_feedback(self, trace_id: str, reward: float) -> None:
+        async with self._lock:
+            if trace_id in self._selection_logs:
+                self._selection_logs[trace_id]["reward"] = reward
+
+    async def get_selection_logs(self) -> List[Dict[str, Any]]:
+        async with self._lock:
+            return sorted(self._selection_logs.values(), key=lambda x: x["timestamp"])
 
 
 class AsyncSQLiteStorage(AsyncBaseStorage):
@@ -1540,6 +1690,17 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                         tool_name TEXT PRIMARY KEY,
                         precision_matrix TEXT,
                         reward_vector TEXT
+                    )
+                    """
+                )
+                await self._conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS selection_log (
+                        trace_id TEXT PRIMARY KEY,
+                        timestamp TEXT,
+                        context_key TEXT,
+                        tool_name TEXT,
+                        reward REAL
                     )
                     """
                 )
@@ -1936,6 +2097,44 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
         )
         await conn.commit()
 
+    async def log_selection(self, trace_id: str, context_key: str, tool_name: str) -> None:
+        conn = await self._get_conn()
+        timestamp = datetime.now(timezone.utc).isoformat()
+        async with self._lock:
+            await conn.execute(
+                """
+                INSERT OR IGNORE INTO selection_log (trace_id, timestamp, context_key, tool_name, reward)
+                VALUES (?, ?, ?, ?, NULL)
+                """,
+                (trace_id, timestamp, context_key, tool_name),
+            )
+            await conn.commit()
+
+    async def log_feedback(self, trace_id: str, reward: float) -> None:
+        conn = await self._get_conn()
+        async with self._lock:
+            await conn.execute(
+                "UPDATE selection_log SET reward = ? WHERE trace_id = ?",
+                (reward, trace_id),
+            )
+            await conn.commit()
+
+    async def get_selection_logs(self) -> List[Dict[str, Any]]:
+        conn = await self._get_conn()
+        async with self._lock:
+            async with conn.execute(
+                "SELECT trace_id, timestamp, context_key, tool_name, reward FROM selection_log ORDER BY timestamp ASC"
+            ) as cursor:
+                logs = []
+                async for row in cursor:
+                    logs.append({
+                        "trace_id": row[0],
+                        "timestamp": row[1],
+                        "context_key": row[2],
+                        "tool_name": row[3],
+                        "reward": float(row[4]) if row[4] is not None else None,
+                    })
+                return logs
 
 
 class AsyncRedisStorage(AsyncBaseStorage):
@@ -2261,4 +2460,44 @@ class AsyncRedisStorage(AsyncBaseStorage):
                 value=json.dumps(list(v))
             )
         await pipe.execute()
+
+    async def log_selection(self, trace_id: str, context_key: str, tool_name: str) -> None:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        key = f"{self.prefix}log:{trace_id}"
+        await self.client.hset(key, mapping={
+            "trace_id": trace_id,
+            "timestamp": timestamp,
+            "context_key": context_key,
+            "tool_name": tool_name,
+        })
+        await self.client.sadd(f"{self.prefix}log_ids", trace_id)
+
+    async def log_feedback(self, trace_id: str, reward: float) -> None:
+        key = f"{self.prefix}log:{trace_id}"
+        if await self.client.exists(key):
+            await self.client.hset(key, "reward", str(reward))
+
+    async def get_selection_logs(self) -> List[Dict[str, Any]]:
+        trace_ids = await self.client.smembers(f"{self.prefix}log_ids")
+        logs = []
+        for tid in trace_ids:
+            tid_str = tid.decode("utf-8") if isinstance(tid, bytes) else str(tid)
+            key = f"{self.prefix}log:{tid_str}"
+            data = await self.client.hgetall(key)
+            if data:
+                decoded = {}
+                for k, v in data.items():
+                    k_str = k.decode("utf-8") if isinstance(k, bytes) else str(k)
+                    v_str = v.decode("utf-8") if isinstance(v, bytes) else str(v)
+                    decoded[k_str] = v_str
+                
+                logs.append({
+                    "trace_id": decoded.get("trace_id", tid_str),
+                    "timestamp": decoded.get("timestamp", ""),
+                    "context_key": decoded.get("context_key", ""),
+                    "tool_name": decoded.get("tool_name", ""),
+                    "reward": float(decoded["reward"]) if decoded.get("reward") is not None else None,
+                })
+        return sorted(logs, key=lambda x: x["timestamp"])
+
 
