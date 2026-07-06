@@ -1,4 +1,9 @@
+<p align="center">
+  <img src="assets/logo.png" alt="BayesBrain Logo" width="400">
+</p>
+
 # BayesBrain: Dynamic Tool Routing via Bayesian Bandits
+
 
 In multi-agent systems, a supervisor agent often needs to decide which specialized sub-agent or API tool to invoke to solve a specific user prompt. Traditionally, this is done using hardcoded heuristics, prompt engineering, or raw LLM classification logits. None of these handle real-time uncertainty or feedback loops well.
 
