@@ -24,7 +24,7 @@ In short: It stops your agents from repeating the same mistakes, turning raw AI 
 
 Stop burning tokens and install **BayesianCortex** today!
 
-Works with [OpenAI](https://openai.com/), [Anthropic](https://www.anthropic.com/), [Google Gemini](https://gemini.google.com/), [FastMCP](https://fastmcp.io/), and [many](https://github.com/sam-tritto/bayesian-cortex/blob/main/src/bayesian_cortex/transports/fastmcp_transport.py#L56-L102) [more](https://github.com/sam-tritto/bayesian-cortex/blob/main/src/bayesian_cortex/transports/anthropic_transport.py#L47-L94)! You just have to plug in your own **Transport Layer**, and you're good to go.
+Works with [OpenAI](https://openai.com/), [Anthropic](https://www.anthropic.com/), [Google Gemini](https://gemini.google.com/), [FastMCP](https://gofastmcp.com/getting-started/welcome), and many more! You just have to plug in your own **Transport Layer**, and you're good to go.
 
 ---
 
