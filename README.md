@@ -28,6 +28,57 @@ Works with [OpenAI](https://openai.com/), [Anthropic](https://www.anthropic.com/
 
 ---
 
+## Why BayesianCortex? (The Value Proposition)
+
+At the core of production-grade AI engineering is a fundamental architectural trade-off: **should you use a Frontier LLM as a router, or should you use a Contextual Multi-Armed Bandit?**
+
+While adding a routing step (like embedding generation) might seem like extra overhead, the engineering and economic benefits of local contextual bandits are massive compared to alternative approaches.
+
+---
+
+### Comparison: Three Ways to Route an Agent
+
+| Routing Approach | How it Works | The Core Problem |
+| :--- | :--- | :--- |
+| **1. The Cloud LLM Router** *(Legacy)* | Pass the user prompt, system descriptions, and schemas of all tools (e.g., 30+ tools) to Claude or GPT to select the candidate. | **Slow and Comically Expensive.** High "context tax" on every single turn. If a tool fails, it triggers a costly recursive "self-correction loop" burning frontier tokens. |
+| **2. Semantic Vector Search** *(Naive)* | Embed the user prompt and query a vector database for the candidate with the closest cosine similarity. | **Blind to Real-World Performance.** Measures only if a tool *sounds* right, not if it *works*. If a tool is a perfect semantic match but its API is down, it locks the agent into an infinite failure loop. |
+| **3. BayesianCortex Router** *(Optimized)* | Embed the user prompt, pass it as context ($x_t$) to a Thompson Sampling / UCB bandit math engine, and compute the candidate with the highest expected success rate. | **Decouples routing from LLMs.** Adapts dynamically using actual performance feedback, routing around failures instantly. |
+
+---
+
+### Core Pillars of Value
+
+#### 1. Zero-Cost Local Embeddings
+By leveraging lightweight, local embedding models (like a 100MB `bge-small-en-v1.5` or `all-MiniLM-L6-v2` via the `local-ml` extra package), developers can compute context vectors in **under 5 milliseconds for $0 API cost**. 
+
+The bandit doesn't need a multi-billion-parameter model to understand the deep philosophy of a prompt; it just needs the embedding model to be *spatially consistent*. As long as similar user requests map to the same neighborhood in vector space, the linear bandit math (`LinUCB` or `LinTS`) will cluster and map those neighborhoods to the tools/skills that actually succeed.
+
+#### 2. Eliminating the Multi-Turn "Retry Loop" Tax
+When an agent fails in production, it usually costs a fortune due to recursive LLM self-correction loops:
+1. **Turn 1**: Call LLM to route to Tool A ($0.01) $\rightarrow$ Tool A times out.
+2. **Turn 2**: Call LLM to diagnose error and try Tool B ($0.015).
+3. **Turn 3**: Call LLM to process Tool B ($0.01) $\rightarrow$ Success.
+* **Total Cost**: ~$0.035 for one successful execution.
+
+With **BayesianCortex**, if Tool A fails, the environment returns a reward of `0`. The bandit instantly mutates its internal covariance matrix for that context neighborhood. The next time a similar prompt comes in, it routes directly to Tool B *before* calling the Cloud LLM, bypassing the retry loop tax.
+
+#### 3. True Runtime Self-Healing
+If a specialized prompt template (Skill) starts causing hallucinations because a foundational model updated its weights, or if a specific RAG index gets corrupted, developers usually have to monitor logs and manually redeploy code. 
+
+**BayesianCortex** provides automated, mathematical self-healing. It naturally shifts probability distributions away from underperforming assets based on live feedback data, optimizing itself in production without human intervention.
+
+---
+
+### Executive Value Proposition Summary
+
+1. **Massive Token & Cost Reduction**: Replaces expensive cloud LLM routing calls with ultra-fast, zero-cost local embedding matrix multiplications.
+2. **Deterministic Reliability**: Stops agents from getting trapped in infinite error/retry loops by mathematically routing *around* failures, rate limits, and hallucinations in real time.
+3. **Contextual Optimization**: Unlike static vector search which only looks at semantic similarity, it maps context directly to **proven execution success**.
+
+This turns your routing setup from a static heuristic into an indispensable, money-saving framework for production-grade agent architectures.
+
+---
+
 ## Architectural Overview
 
 BayesianCortex is decoupled from your execution layer, acting as a lightweight interceptor/middleware:
