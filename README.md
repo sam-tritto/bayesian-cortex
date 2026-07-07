@@ -55,9 +55,9 @@ The bandit doesn't need a multi-billion-parameter model to understand the deep p
 
 #### 2. Eliminating the Multi-Turn "Retry Loop" Tax
 When an agent fails in production, it usually costs a fortune due to recursive LLM self-correction loops:
-1. **Turn 1**: Call LLM to route to Tool A ($0.01) $\rightarrow$ Tool A times out.
+1. **Turn 1**: Call LLM to route to Tool A ($0.01) --> Tool A times out.
 2. **Turn 2**: Call LLM to diagnose error and try Tool B ($0.015).
-3. **Turn 3**: Call LLM to process Tool B ($0.01) $\rightarrow$ Success.
+3. **Turn 3**: Call LLM to process Tool B ($0.01) --> Success.
 * **Total Cost**: ~$0.035 for one successful execution.
 
 With **BayesianCortex**, if Tool A fails, the environment returns a reward of `0`. The bandit instantly mutates its internal covariance matrix for that context neighborhood. The next time a similar prompt comes in, it routes directly to Tool B *before* calling the Cloud LLM, bypassing the retry loop tax.
