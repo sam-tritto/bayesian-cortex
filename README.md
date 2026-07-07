@@ -118,10 +118,10 @@ Install using `uv` or standard pip:
 
 ```bash
 # Core package (In-memory, SQLite, and Redis support)
-uv pip install bayesian_cortex
+uv pip install bayesian-cortex
 
 # Install with local embedding support
-uv pip install "bayesian_cortex[local-ml]"
+uv pip install "bayesian-cortex[local-ml]"
 ```
 
 For advanced features, ensure the following database dependencies are satisfied:
