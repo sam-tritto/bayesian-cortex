@@ -552,6 +552,10 @@ The `cortex://metrics` dashboard exposes rich, live visuals to monitor routing d
 * **Recent Executions Log**: Lists the 20 most recent routing executions chronologically, detailing the Trace ID, Timestamp, Context Cluster, Selected Candidate/Skill, and Reward feedback outcome.
 * **History MA10 SVG Line Chart**: Renders a chronological line plot tracking the running moving average success rates of candidate candidates/skills over time.
 
+<p align="center">
+  <img src="assets/demo_dashboard.png" alt="Bayesian Cortex Beliefs Dashboard" width="700"/>
+</p>
+
 #### How to open the dashboard:
 * **Using your Agent:** Ask your agent: *"Read the resource `cortex://metrics`"*
 * **Using a GUI Client (e.g., Cursor/Claude Desktop):** Look at the **Resources** pane or icon in the chat interface and click on `cortex://metrics` to open the live view.
@@ -566,6 +570,10 @@ To witness Thompson Sampling adapt to drifting API failure rates in real time, r
 uv run python demo.py
 ```
 This script initializes a local SQLite bandit database, generates simulated query clusters (e.g., coding tasks, web search queries), routes them, simulates execution, updates priors, and prints ASCII sparklines showing the learning process.
+
+<p align="center">
+  <img src="assets/demo_interactive.png" alt="Manual Interactive Routing Loop" width="700"/>
+</p>
 
 ---
 
