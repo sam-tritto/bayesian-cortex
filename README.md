@@ -450,18 +450,27 @@ process_ui_feedback(
 
 Optimize candidate/skill selection in Claude Code or other MCP hosts by registering a Meta-Candidate to handle dynamic routing, alongside administrative candidates to manage and monitor bandit beliefs.
 
-You can configure and expose these endpoints using [create_mcp_server](file:///Users/sam/Locals%20Only/bayesian-cortex/src/bayesian_cortex/mcp_server.py#L375):
+You can configure and expose these endpoints using [create_mcp_server](file:///Users/sam/Locals%20Only/bayesian-cortex/src/bayesian_cortex/mcp_server.py):
 
 ```python
 from bayesian_cortex.mcp_server import create_mcp_server
 
-# Build the FastMCP server
+# Build the FastMCP server with dynamic component toggles
 mcp = create_mcp_server(
     server_name="BayesianCortex",
     db_path="mcp_bandit.db",
-    candidates=["local_pytest", "docker_sandbox", "fallback_api"]
+    enable_tools=True,       # Registers execute_adaptive_action
+    enable_skills=True,      # Registers get_candidate_beliefs & reset_candidate_beliefs
+    enable_rag=False,        # Registers route_knowledge_base (off by default to save tokens)
+    sub_tools=["local_pytest", "docker_sandbox", "fallback_api"] # Can also use 'candidates'
 )
 ```
+
+### 🧠 Optimizing the MCP "Context Tax"
+
+Under the MCP specification, whenever an AI client (like Claude Code or Cursor) connects to your server, it executes a handshake that lists all tools and resources. The client then injects the full JSON Schema definition of every registered endpoint into the LLM's system prompt on every turn of the conversation.
+
+A well-documented tool schema can consume **300 to 1,500 tokens of system context**. By using `enable_tools`, `enable_skills`, and `enable_rag` toggles, you can selectively disable capabilities you aren't using to prevent token bloat, reduce API costs, and minimize model routing confusion.
 
 You can launch the server over `stdio` by executing:
 ```bash
@@ -470,12 +479,13 @@ python -m bayesian_cortex.mcp_server
 
 ### Registered Candidates, Skills & Resources
 
-| Endpoint | Type | Description |
-| :--- | :--- | :--- |
-| `execute_adaptive_action` | `Tool` | Thompson sampling/UCB routes incoming tasks to the best sub-candidate/skill candidate and automatically applies execution feedback. |
-| `get_candidate_beliefs` | `Tool` | Retrieve current posterior $\alpha$ and $\beta$ beliefs for all candidate candidates/skills under a given context (resolving context-specific priors). |
-| `reset_candidate_beliefs` | `Tool` | Reset the beliefs back to the default prior for a candidate/skill under a context. |
-| `cortex://metrics` | `Resource` | Exposes a Markdown Dashboard with context clusters, expected success rates, and raw telemetry metrics. |
+| Endpoint | Type | Configuration Toggle | Description |
+| :--- | :--- | :--- | :--- |
+| `execute_adaptive_action` | `Tool` | `enable_tools=True` | Thompson sampling/UCB routes incoming tasks to the best sub-candidate/skill candidate and automatically applies execution feedback. |
+| `get_candidate_beliefs` | `Tool` | `enable_skills=True` | Retrieve current posterior $\alpha$ and $\beta$ beliefs for all candidate candidates/skills under a given context (resolving context-specific priors). |
+| `reset_candidate_beliefs` | `Tool` | `enable_skills=True` | Reset the beliefs back to the default prior for a candidate/skill under a context. |
+| `route_knowledge_base` | `Tool` | `enable_rag=True` | Selects the highest-yielding RAG index source/strategy for a semantic query. |
+| `cortex://metrics` | `Resource` | Always Active | Exposes a Markdown Dashboard with context clusters, expected success rates, and raw telemetry metrics (dynamically filtered based on active flags). |
 
 ### 🛠️ Host Integration Configuration
 

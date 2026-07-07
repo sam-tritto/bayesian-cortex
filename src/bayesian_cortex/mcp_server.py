@@ -384,6 +384,10 @@ def create_mcp_server(
     candidate_executor: Optional[Callable[[str, str], Union[Tuple[str, bool], str]]] = None,
     priors: Optional[Dict[str, Tuple[float, float]]] = None,
     contextual_priors: Optional[List[Dict[str, Any]]] = None,
+    enable_tools: bool = True,
+    enable_skills: bool = True,
+    enable_rag: bool = False,
+    sub_tools: Optional[List[str]] = None,
 ) -> FastMCP:
     """
     Configure and return a FastMCP server wrapping an AsyncBayesianRouter instance.
@@ -396,6 +400,10 @@ def create_mcp_server(
                        either (output, success_bool) or just output (which defaults to success).
         priors: Preseeded alpha/beta priors for candidates/skills to mitigate cold start.
         contextual_priors: List of context-specific prior rules matching regex or embedding clusters.
+        enable_tools: Toggle registration of core execution tools.
+        enable_skills: Toggle registration of administrative/belief management tools.
+        enable_rag: Toggle registration of retrieval routing endpoints.
+        sub_tools: Alternative list parameter for candidates, mapped for compatibility.
     """
     mcp = FastMCP(server_name)
     
@@ -407,7 +415,7 @@ def create_mcp_server(
         contextual_priors=contextual_priors,
     )
     
-    available_candidates = candidates or ["local_pytest", "docker_sandbox", "fallback_api"]
+    available_candidates = candidates or sub_tools or ["local_pytest", "docker_sandbox", "fallback_api"]
 
     async def run_candidate_logic(candidate_name: str, task: str) -> Tuple[str, bool]:
         if candidate_executor:
@@ -431,105 +439,123 @@ def create_mcp_server(
         else:
             return "Fallback API request dispatched and processed.", True
 
-    @mcp.tool()
-    async def execute_adaptive_action(task_description: str) -> str:
-        """
-        Dynamically routes task execution to the most reliable sub-candidate/skill candidate.
+    if enable_tools:
+        @mcp.tool()
+        async def execute_adaptive_action(task_description: str) -> str:
+            """
+            Dynamically routes task execution to the most reliable sub-candidate/skill candidate.
 
-        Args:
-            task_description: A description of the code or integration task to execute.
-        """
-        # Thompson sampling selects the candidate
-        chosen_candidate, trace_id = await router.aroute_with_trace(
-            context_text=task_description,
-            candidates=available_candidates
-        )
+            Args:
+                task_description: A description of the code or integration task to execute.
+            """
+            # Thompson sampling selects the candidate
+            chosen_candidate, trace_id = await router.aroute_with_trace(
+                context_text=task_description,
+                candidates=available_candidates
+            )
 
-        try:
-            result, success = await run_candidate_logic(chosen_candidate, task_description)
-        except Exception as e:
-            result, success = f"Adaptive execution encountered an error: {str(e)}", False
-
-        # Submit execution feedback asynchronously
-        await router.afeedback_by_trace(trace_id=trace_id, success=success)
-
-        return f"Selected Candidate: {chosen_candidate}\nExecution Output:\n{result}"
-
-    @mcp.tool()
-    async def get_candidate_beliefs(context: str) -> str:
-        """
-        Retrieve the current posterior alpha and beta beliefs for all candidates/skills under a given context.
-
-        Args:
-            context: The context text to look up beliefs for.
-        """
-        # Resolve the context key (non-mutating lookup first)
-        context_key = None
-        if router.embedder:
             try:
-                if hasattr(router.embedder, "aembed_query"):
-                    vector = await router.embedder.aembed_query(context)
-                else:
-                    vector = router.embedder.embed_query(context)
-                context_key = await router._context_store.aget_nearest_context(
-                    query_vector=vector,
-                    similarity_threshold=router.similarity_threshold,
-                )
-            except Exception:
-                pass
+                result, success = await run_candidate_logic(chosen_candidate, task_description)
+            except Exception as e:
+                result, success = f"Adaptive execution encountered an error: {str(e)}", False
 
-        if context_key is None:
-            context_key = router._hash_context_text(context)
+            # Submit execution feedback asynchronously
+            await router.afeedback_by_trace(trace_id=trace_id, success=success)
 
-        beliefs = {}
-        for candidate_name in available_candidates:
-            alpha, beta = await router.storage.get_candidate_params(context_key, candidate_name)
-            if alpha == 1.0 and beta == 1.0:
-                if hasattr(router, "get_prior"):
-                    import inspect
-                    if inspect.iscoroutinefunction(router.get_prior):
-                        alpha, beta = await router.get_prior(context, candidate_name)
+            return f"Selected Candidate: {chosen_candidate}\nExecution Output:\n{result}"
+
+    if enable_skills:
+        @mcp.tool()
+        async def get_candidate_beliefs(context: str) -> str:
+            """
+            Retrieve the current posterior alpha and beta beliefs for all candidates/skills under a given context.
+
+            Args:
+                context: The context text to look up beliefs for.
+            """
+            # Resolve the context key (non-mutating lookup first)
+            context_key = None
+            if router.embedder:
+                try:
+                    if hasattr(router.embedder, "aembed_query"):
+                        vector = await router.embedder.aembed_query(context)
                     else:
-                        alpha, beta = router.get_prior(context, candidate_name)
-                elif candidate_name in router.priors:
-                    alpha, beta = router.priors[candidate_name]
-            beliefs[candidate_name] = {"alpha": alpha, "beta": beta}
+                        vector = router.embedder.embed_query(context)
+                    context_key = await router._context_store.aget_nearest_context(
+                        query_vector=vector,
+                        similarity_threshold=router.similarity_threshold,
+                    )
+                except Exception:
+                    pass
 
-        return json.dumps(beliefs, indent=2)
+            if context_key is None:
+                context_key = router._hash_context_text(context)
 
-    @mcp.tool()
-    async def reset_candidate_beliefs(context: str, candidate: str) -> str:
-        """
-        Reset the posterior alpha and beta beliefs back to the default prior (1.0, 1.0)
-        for a specific candidate/skill under a given context.
+            beliefs = {}
+            for candidate_name in available_candidates:
+                alpha, beta = await router.storage.get_candidate_params(context_key, candidate_name)
+                if alpha == 1.0 and beta == 1.0:
+                    if hasattr(router, "get_prior"):
+                        import inspect
+                        if inspect.iscoroutinefunction(router.get_prior):
+                            alpha, beta = await router.get_prior(context, candidate_name)
+                        else:
+                            alpha, beta = router.get_prior(context, candidate_name)
+                    elif candidate_name in router.priors:
+                        alpha, beta = router.priors[candidate_name]
+                beliefs[candidate_name] = {"alpha": alpha, "beta": beta}
 
-        Args:
-            context: The context text to reset beliefs for.
-            candidate: The specific candidate/skill name to reset beliefs for.
-        """
-        if candidate not in available_candidates:
-            return f"Error: Candidate '{candidate}' is not in the list of available candidates ({available_candidates})."
+            return json.dumps(beliefs, indent=2)
 
-        # Resolve the context key
-        context_key = None
-        if router.embedder:
-            try:
-                if hasattr(router.embedder, "aembed_query"):
-                    vector = await router.embedder.aembed_query(context)
-                else:
-                    vector = router.embedder.embed_query(context)
-                context_key = await router._context_store.aget_nearest_context(
-                    query_vector=vector,
-                    similarity_threshold=router.similarity_threshold,
-                )
-            except Exception:
-                pass
+        @mcp.tool()
+        async def reset_candidate_beliefs(context: str, candidate: str) -> str:
+            """
+            Reset the posterior alpha and beta beliefs back to the default prior (1.0, 1.0)
+            for a specific candidate/skill under a given context.
 
-        if context_key is None:
-            context_key = router._hash_context_text(context)
+            Args:
+                context: The context text to reset beliefs for.
+                candidate: The specific candidate/skill name to reset beliefs for.
+            """
+            if candidate not in available_candidates:
+                return f"Error: Candidate '{candidate}' is not in the list of available candidates ({available_candidates})."
 
-        await router.storage.update_candidate_params(context_key, candidate, 1.0, 1.0)
-        return f"Beliefs for candidate '{candidate}' under context key '{context_key}' have been reset to (1.0, 1.0)."
+            # Resolve the context key
+            context_key = None
+            if router.embedder:
+                try:
+                    if hasattr(router.embedder, "aembed_query"):
+                        vector = await router.embedder.aembed_query(context)
+                    else:
+                        vector = router.embedder.embed_query(context)
+                    context_key = await router._context_store.aget_nearest_context(
+                        query_vector=vector,
+                        similarity_threshold=router.similarity_threshold,
+                    )
+                except Exception:
+                    pass
+
+            if context_key is None:
+                context_key = router._hash_context_text(context)
+
+            await router.storage.update_candidate_params(context_key, candidate, 1.0, 1.0)
+            return f"Beliefs for candidate '{candidate}' under context key '{context_key}' have been reset to (1.0, 1.0)."
+
+    if enable_rag:
+        @mcp.tool()
+        async def route_knowledge_base(query: str, vector_indices: List[str]) -> str:
+            """
+            Selects the highest-yielding RAG index source for a semantic query.
+
+            Args:
+                query: The semantic search query.
+                vector_indices: List of candidate RAG vector index sources/strategies to route to.
+            """
+            chosen, trace_id = await router.aroute_with_trace(
+                context_text=query,
+                candidates=vector_indices
+            )
+            return f"Selected RAG Index: {chosen}\nTrace ID: {trace_id}"
 
     @mcp.resource("cortex://metrics")
     async def get_metrics() -> str:
@@ -544,123 +570,132 @@ def create_mcp_server(
             "",
         ]
 
+        # Check if anything is enabled
+        if not (enable_tools or enable_skills or enable_rag):
+            lines.append("*All metric tracking components (Tools, Skills, RAG) are currently disabled.*")
+            return "\n".join(lines)
+
         # 1. Posterior Belief Distributions
-        lines.append("## Posterior Belief Distributions")
-        lines.append("")
-        if not all_beliefs:
-            lines.append("*No active beliefs recorded in storage yet.*")
+        if enable_skills:
+            lines.append("## Posterior Belief Distributions")
             lines.append("")
-        else:
-            lines.append(f"**Total Context Clusters:** {len(all_beliefs)}")
-            lines.append("")
-
-            # Build full beliefs including defaults/priors for all available candidates
-            full_beliefs = {}
-            for ctx_key, tools_beliefs in all_beliefs.items():
-                full_beliefs[ctx_key] = {}
-                for c_name in available_candidates:
-                    params = tools_beliefs.get(c_name, {"alpha": 1.0, "beta": 1.0})
-                    if params["alpha"] == 1.0 and params["beta"] == 1.0 and c_name in router.priors:
-                        params = {"alpha": router.priors[c_name][0], "beta": router.priors[c_name][1]}
-                    full_beliefs[ctx_key][c_name] = params
-
-            for ctx_key, tools_beliefs in full_beliefs.items():
-                lines.append(f"### Context Cluster: `{ctx_key}`")
+            if not all_beliefs:
+                lines.append("*No active beliefs recorded in storage yet.*")
                 lines.append("")
-                lines.append("| Candidate | Alpha (Successes) | Beta (Failures) | Expected Success Rate | Belief Sparkline (0 to 1) |")
-                lines.append("| :--- | :---: | :---: | :---: | :---: |")
+            else:
+                lines.append(f"**Total Context Clusters:** {len(all_beliefs)}")
+                lines.append("")
 
-                for c_name, params in tools_beliefs.items():
-                    alpha = params.get("alpha", 1.0)
-                    beta = params.get("beta", 1.0)
-                    total = alpha + beta
-                    expected_rate = (alpha / total) * 100 if total > 0 else 50.0
-                    sparkline = generate_ascii_sparkline(alpha, beta)
-                    lines.append(f"| {c_name} | {alpha:.2f} | {beta:.2f} | {expected_rate:.1f}% | `{sparkline}` |")
-                lines.append("")
-                
-                # Render SVG Beta density curve
-                lines.append("#### Probability Density Curves")
-                lines.append('<div align="center">')
-                lines.append(generate_beta_pdf_svg(tools_beliefs))
-                lines.append("</div>")
-                lines.append("")
+                # Build full beliefs including defaults/priors for all available candidates
+                full_beliefs = {}
+                for ctx_key, tools_beliefs in all_beliefs.items():
+                    full_beliefs[ctx_key] = {}
+                    for c_name in available_candidates:
+                        params = tools_beliefs.get(c_name, {"alpha": 1.0, "beta": 1.0})
+                        if params["alpha"] == 1.0 and params["beta"] == 1.0 and c_name in router.priors:
+                            params = {"alpha": router.priors[c_name][0], "beta": router.priors[c_name][1]}
+                        full_beliefs[ctx_key][c_name] = params
+
+                for ctx_key, tools_beliefs in full_beliefs.items():
+                    lines.append(f"### Context Cluster: `{ctx_key}`")
+                    lines.append("")
+                    lines.append("| Candidate | Alpha (Successes) | Beta (Failures) | Expected Success Rate | Belief Sparkline (0 to 1) |")
+                    lines.append("| :--- | :---: | :---: | :---: | :---: |")
+
+                    for c_name, params in tools_beliefs.items():
+                        alpha = params.get("alpha", 1.0)
+                        beta = params.get("beta", 1.0)
+                        total = alpha + beta
+                        expected_rate = (alpha / total) * 100 if total > 0 else 50.0
+                        sparkline = generate_ascii_sparkline(alpha, beta)
+                        lines.append(f"| {c_name} | {alpha:.2f} | {beta:.2f} | {expected_rate:.1f}% | `{sparkline}` |")
+                    lines.append("")
+                    
+                    # Render SVG Beta density curve
+                    lines.append("#### Probability Density Curves")
+                    lines.append('<div align="center">')
+                    lines.append(generate_beta_pdf_svg(tools_beliefs))
+                    lines.append("</div>")
+                    lines.append("")
 
         # 2. Historical performance statistics
-        lines.append("## Selection Frequencies & Success Rates")
-        lines.append("")
-        total_selections = len(logs)
-        lines.append(f"**Total Decisions Logged:** {total_selections}")
-        lines.append("")
+        if enable_tools or enable_rag:
+            lines.append("## Selection Frequencies & Success Rates")
+            lines.append("")
+            total_selections = len(logs)
+            lines.append(f"**Total Decisions Logged:** {total_selections}")
+            lines.append("")
 
-        # Aggregate counts and success rates
-        select_counts = {t: 0 for t in available_candidates}
-        feedback_counts = {t: 0 for t in available_candidates}
-        rewards = {t: [] for t in available_candidates}
-        
-        for log in logs:
-            c_name = log["candidate_name"]
-            reward = log["reward"]
-            if c_name in select_counts:
-                select_counts[c_name] += 1
-            if reward is not None:
-                if c_name in feedback_counts:
-                    feedback_counts[c_name] += 1
-                if c_name in rewards:
-                    rewards[c_name].append(reward)
-
-        lines.append("| Candidate | Total Selections | Selection Frequency | Runs with Feedback | Overall Success Rate | Recent Success Rate (MA10) |")
-        lines.append("| :--- | :---: | :---: | :---: | :---: | :---: |")
-        for idx, c_name in enumerate(available_candidates):
-            sel_cnt = select_counts[c_name]
-            sel_freq = (sel_cnt / total_selections * 100) if total_selections > 0 else 0.0
-            fb_cnt = feedback_counts[c_name]
-            r_list = rewards[c_name]
-            overall_rate = (sum(r_list) / len(r_list) * 100) if len(r_list) > 0 else 0.0
-            ma_list = r_list[-10:]
-            recent_rate = (sum(ma_list) / len(ma_list) * 100) if len(ma_list) > 0 else 0.0
+            # Aggregate counts and success rates
+            select_counts = {t: 0 for t in available_candidates}
+            feedback_counts = {t: 0 for t in available_candidates}
+            rewards = {t: [] for t in available_candidates}
             
-            recent_rate_str = f"{recent_rate:.1f}%" if len(ma_list) > 0 else "N/A"
-            overall_rate_str = f"{overall_rate:.1f}%" if len(r_list) > 0 else "N/A"
-            lines.append(f"| {c_name} | {sel_cnt} | {sel_freq:.1f}% | {fb_cnt} | {overall_rate_str} | {recent_rate_str} |")
-        lines.append("")
+            for log in logs:
+                c_name = log["candidate_name"]
+                reward = log["reward"]
+                if c_name in select_counts:
+                    select_counts[c_name] += 1
+                if reward is not None:
+                    if c_name in feedback_counts:
+                        feedback_counts[c_name] += 1
+                    if c_name in rewards:
+                        rewards[c_name].append(reward)
 
-        lines.append("### Moving Average Success Rate Over Time")
-        lines.append('<div align="center">')
-        lines.append(generate_history_svg(logs, available_candidates))
-        lines.append("</div>")
-        lines.append("")
+            lines.append("| Candidate | Total Selections | Selection Frequency | Runs with Feedback | Overall Success Rate | Recent Success Rate (MA10) |")
+            lines.append("| :--- | :---: | :---: | :---: | :---: | :---: |")
+            for idx, c_name in enumerate(available_candidates):
+                sel_cnt = select_counts[c_name]
+                sel_freq = (sel_cnt / total_selections * 100) if total_selections > 0 else 0.0
+                fb_cnt = feedback_counts[c_name]
+                r_list = rewards[c_name]
+                overall_rate = (sum(r_list) / len(r_list) * 100) if len(r_list) > 0 else 0.0
+                ma_list = r_list[-10:]
+                recent_rate = (sum(ma_list) / len(ma_list) * 100) if len(ma_list) > 0 else 0.0
+                
+                recent_rate_str = f"{recent_rate:.1f}%" if len(ma_list) > 0 else "N/A"
+                overall_rate_str = f"{overall_rate:.1f}%" if len(r_list) > 0 else "N/A"
+                lines.append(f"| {c_name} | {sel_cnt} | {sel_freq:.1f}% | {fb_cnt} | {overall_rate_str} | {recent_rate_str} |")
+            lines.append("")
+
+            lines.append("### Moving Average Success Rate Over Time")
+            lines.append('<div align="center">')
+            lines.append(generate_history_svg(logs, available_candidates))
+            lines.append("</div>")
+            lines.append("")
 
         # 3. Recent actions log
-        lines.append("## Chronological Execution Log (Recent)")
-        lines.append("")
-        recent_logs = logs[-20:] if total_selections > 20 else logs
-        if not recent_logs:
-            lines.append("*No routing actions logged yet.*")
+        if enable_tools or enable_rag:
+            lines.append("## Chronological Execution Log (Recent)")
             lines.append("")
-        else:
-            lines.append("| Trace ID | Timestamp (UTC) | Context Key | Selected Candidate | Feedback Reward / Outcome |")
-            lines.append("| :--- | :--- | :--- | :--- | :--- |")
-            for log in reversed(recent_logs):
-                tid = log["trace_id"]
-                tid_display = tid[:15] + "..." if len(tid) > 18 else tid
-                ts = log["timestamp"]
-                ts_display = ts.split(".")[0].replace("T", " ") if "T" in ts else ts
-                ctx = log["context_key"]
-                candidate = log["candidate_name"]
-                rew = log["reward"]
-                if rew is None:
-                    rew_display = "*Pending feedback*"
-                elif rew == 1.0:
-                    rew_display = "**1.0 (Success)**"
-                elif rew == 0.0:
-                    rew_display = "0.0 (Failure)"
-                else:
-                    rew_display = f"{rew:.2f}"
-                lines.append(f"| `{tid_display}` | {ts_display} | `{ctx}` | `{candidate}` | {rew_display} |")
-            lines.append("")
+            total_selections = len(logs)
+            recent_logs = logs[-20:] if total_selections > 20 else logs
+            if not recent_logs:
+                lines.append("*No routing actions logged yet.*")
+                lines.append("")
+            else:
+                lines.append("| Trace ID | Timestamp (UTC) | Context Key | Selected Candidate | Feedback Reward / Outcome |")
+                lines.append("| :--- | :--- | :--- | :--- | :--- |")
+                for log in reversed(recent_logs):
+                    tid = log["trace_id"]
+                    tid_display = tid[:15] + "..." if len(tid) > 18 else tid
+                    ts = log["timestamp"]
+                    ts_display = ts.split(".")[0].replace("T", " ") if "T" in ts else ts
+                    ctx = log["context_key"]
+                    candidate = log["candidate_name"]
+                    rew = log["reward"]
+                    if rew is None:
+                        rew_display = "*Pending feedback*"
+                    elif rew == 1.0:
+                        rew_display = "**1.0 (Success)**"
+                    elif rew == 0.0:
+                        rew_display = "0.0 (Failure)"
+                    else:
+                        rew_display = f"{rew:.2f}"
+                    lines.append(f"| `{tid_display}` | {ts_display} | `{ctx}` | `{candidate}` | {rew_display} |")
+                lines.append("")
 
-        if all_beliefs:
+        if enable_skills and all_beliefs:
             lines.append("## Raw JSON Data")
             lines.append("```json")
             lines.append(json.dumps(full_beliefs, indent=2))

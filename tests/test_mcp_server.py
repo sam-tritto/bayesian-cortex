@@ -139,3 +139,74 @@ async def test_mcp_server_contextual_priors():
         if os.path.exists(db_path):
             os.remove(db_path)
 
+
+@pytest.mark.anyio
+async def test_mcp_server_dynamic_registration():
+    db_path = "test_mcp_bandit_dynamic.db"
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
+    try:
+        # Test 1: disable tools, enable skills
+        mcp_no_tools = create_mcp_server(
+            server_name="TestNoTools",
+            db_path=db_path,
+            candidates=["tool1", "tool2"],
+            enable_tools=False,
+            enable_skills=True,
+            enable_rag=False
+        )
+        tools_no_tools = [t.name for t in mcp_no_tools._tool_manager.list_tools()]
+        assert "execute_adaptive_action" not in tools_no_tools
+        assert "get_candidate_beliefs" in tools_no_tools
+        assert "route_knowledge_base" not in tools_no_tools
+
+        # Read resource dashboard
+        res_no_tools = await mcp_no_tools.read_resource("cortex://metrics")
+        metrics_no_tools = res_no_tools[0].content
+        assert "Posterior Belief Distributions" in metrics_no_tools
+        assert "Selection Frequencies & Success Rates" not in metrics_no_tools
+
+        # Test 2: disable skills, enable RAG and tools
+        mcp_no_skills = create_mcp_server(
+            server_name="TestNoSkills",
+            db_path=db_path,
+            candidates=["tool1", "tool2"],
+            enable_tools=True,
+            enable_skills=False,
+            enable_rag=True
+        )
+        tools_no_skills = [t.name for t in mcp_no_skills._tool_manager.list_tools()]
+        assert "execute_adaptive_action" in tools_no_skills
+        assert "get_candidate_beliefs" not in tools_no_skills
+        assert "reset_candidate_beliefs" not in tools_no_skills
+        assert "route_knowledge_base" in tools_no_skills
+
+        res_no_skills = await mcp_no_skills.read_resource("cortex://metrics")
+        metrics_no_skills = res_no_skills[0].content
+        assert "Posterior Belief Distributions" not in metrics_no_skills
+        assert "Selection Frequencies & Success Rates" in metrics_no_skills
+
+        # Call route_knowledge_base tool
+        res_rag, _ = await mcp_no_skills.call_tool("route_knowledge_base", {"query": "test query", "vector_indices": ["idx1", "idx2"]})
+        assert "Selected RAG Index" in res_rag[0].text
+        assert "Trace ID" in res_rag[0].text
+
+        # Test 3: sub_tools parameter mapping
+        mcp_sub_tools = create_mcp_server(
+            server_name="TestSubTools",
+            db_path=db_path,
+            sub_tools=["sub1", "sub2"],
+            enable_tools=True,
+            enable_skills=True
+        )
+        res_beliefs, _ = await mcp_sub_tools.call_tool("get_candidate_beliefs", {"context": "general"})
+        beliefs = json.loads(res_beliefs[0].text)
+        assert "sub1" in beliefs
+        assert "sub2" in beliefs
+
+    finally:
+        if os.path.exists(db_path):
+            os.remove(db_path)
+
+
