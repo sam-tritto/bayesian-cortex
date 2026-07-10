@@ -85,8 +85,8 @@ def _linear_score(
     if diagonal_covariance:
         uncertainty = np.sqrt(np.sum((x_augmented**2) / precision))
     else:
-        cov = np.linalg.inv(precision)
-        uncertainty = np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented)))
+        y = np.linalg.solve(precision, x_augmented)
+        uncertainty = np.sqrt(np.dot(x_augmented, y))
     return expected_reward + exploration_weight * uncertainty
 
 
@@ -108,8 +108,8 @@ def _linear_posterior(
     else:
         theta_hat = np.linalg.solve(precision, reward_vector)
         expected_reward = float(np.dot(x_augmented, theta_hat))
-        cov = np.linalg.inv(precision)
-        uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
+        y = np.linalg.solve(precision, x_augmented)
+        uncertainty = float(np.sqrt(np.dot(x_augmented, y)))
     return expected_reward, uncertainty
 
 
