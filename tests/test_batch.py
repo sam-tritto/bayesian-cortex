@@ -284,3 +284,81 @@ async def test_async_router_batch_routing(async_mem_storage):
         },
     ]
     await router.afeedback_batch(feedbacks)
+
+
+class TrackingMockEmbedder:
+    def __init__(self) -> None:
+        self.embed_query_count = 0
+        self.embed_queries_count = 0
+        self.aembed_query_count = 0
+        self.aembed_queries_count = 0
+
+    def embed_query(self, text: str):
+        self.embed_query_count += 1
+        return [0.1, 0.2]
+
+    def embed_queries(self, texts: list[str]):
+        self.embed_queries_count += 1
+        return [[0.1, 0.2] for _ in texts]
+
+    async def aembed_query(self, text: str):
+        self.aembed_query_count += 1
+        return [0.1, 0.2]
+
+    async def aembed_queries(self, texts: list[str]):
+        self.aembed_queries_count += 1
+        return [[0.1, 0.2] for _ in texts]
+
+
+def test_router_batch_feedback_linear_no_double_embedding(mem_storage):
+    embedder = TrackingMockEmbedder()
+    router = BayesianRouter(
+        storage=mem_storage,
+        embedder=embedder,
+        mode="linucb",
+    )
+    # feedback batch with contexts to embed
+    feedbacks = [
+        {
+            "context_text": "hello batch",
+            "candidate_name": "tool_a",
+            "success": True,
+        },
+        {
+            "context_text": "hello batch 2",
+            "candidate_name": "tool_b",
+            "reward": 0.0,
+        },
+    ]
+    router.feedback_batch(feedbacks)
+
+    # We expect only ONE call to batch embedding!
+    assert embedder.embed_queries_count == 1
+    assert embedder.embed_query_count == 0
+
+
+@pytest.mark.anyio
+async def test_async_router_batch_feedback_linear_no_double_embedding(async_mem_storage):
+    embedder = TrackingMockEmbedder()
+    router = AsyncBayesianRouter(
+        storage=async_mem_storage,
+        embedder=embedder,
+        mode="linucb",
+    )
+    feedbacks = [
+        {
+            "context_text": "hello batch",
+            "candidate_name": "tool_a",
+            "success": True,
+        },
+        {
+            "context_text": "hello batch 2",
+            "candidate_name": "tool_b",
+            "reward": 0.0,
+        },
+    ]
+    await router.afeedback_batch(feedbacks)
+
+    # We expect only ONE call to async batch embedding!
+    assert embedder.aembed_queries_count == 1
+    assert embedder.aembed_query_count == 0

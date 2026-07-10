@@ -1180,20 +1180,27 @@ class BayesianRouter:
                     logger.error(f"Telemetry hook failed: {hook_err}")
             return 1.0, 1.0
 
-    def _resolve_context_keys(self, contexts: List[str]) -> List[str]:
+    def _resolve_context_keys(
+        self,
+        contexts: List[str],
+        precomputed_vectors: Optional[List[Sequence[float]]] = None,
+    ) -> List[str]:
         if not self.embedder:
             return [self._hash_context_text(ctx) for ctx in contexts]
 
-        try:
-            if hasattr(self.embedder, "embed_queries"):
-                vectors = self.embedder.embed_queries(contexts)
-            else:
-                vectors = [self.embedder.embed_query(ctx) for ctx in contexts]
-        except Exception:
-            logger.warning(
-                "Failed to generate embeddings in batch. Falling back to exact-match hashing."
-            )
-            return [self._hash_context_text(ctx) for ctx in contexts]
+        if precomputed_vectors is not None:
+            vectors = precomputed_vectors
+        else:
+            try:
+                if hasattr(self.embedder, "embed_queries"):
+                    vectors = self.embedder.embed_queries(contexts)
+                else:
+                    vectors = [self.embedder.embed_query(ctx) for ctx in contexts]
+            except Exception:
+                logger.warning(
+                    "Failed to generate embeddings in batch. Falling back to exact-match hashing."
+                )
+                return [self._hash_context_text(ctx) for ctx in contexts]
 
         resolved_keys = []
         new_contexts_to_save = []
@@ -1566,11 +1573,7 @@ class BayesianRouter:
                     contexts_to_embed_indices.append(len(prepared_feedbacks) - 1)
 
             if contexts_to_embed:
-                resolved_keys = self._resolve_context_keys(contexts_to_embed)
-                for idx, key in zip(contexts_to_embed_indices, resolved_keys):
-                    prepared_feedbacks[idx]["context_key"] = key
-
-                if self.mode != "clustering":
+                if self.mode != "clustering" and self.embedder:
                     if hasattr(self.embedder, "embed_queries"):
                         vectors = self.embedder.embed_queries(contexts_to_embed)
                     else:
@@ -1579,6 +1582,14 @@ class BayesianRouter:
                         ]
                     for idx, vector in zip(contexts_to_embed_indices, vectors):
                         prepared_feedbacks[idx]["vector"] = vector
+                else:
+                    vectors = None
+
+                resolved_keys = self._resolve_context_keys(
+                    contexts_to_embed, precomputed_vectors=vectors
+                )
+                for idx, key in zip(contexts_to_embed_indices, resolved_keys):
+                    prepared_feedbacks[idx]["context_key"] = key
 
             if self.mode == "clustering":
                 updates = []
@@ -2799,26 +2810,33 @@ class AsyncBayesianRouter:
             )
             return 1.0, 1.0
 
-    async def _resolve_context_keys(self, contexts: List[str]) -> List[str]:
+    async def _resolve_context_keys(
+        self,
+        contexts: List[str],
+        precomputed_vectors: Optional[List[Sequence[float]]] = None,
+    ) -> List[str]:
         if not self.embedder:
             return [self._hash_context_text(ctx) for ctx in contexts]
 
-        try:
-            if hasattr(self.embedder, "aembed_queries"):
-                vectors = await self.embedder.aembed_queries(contexts)
-            elif hasattr(self.embedder, "embed_queries"):
-                vectors = self.embedder.embed_queries(contexts)
-            elif hasattr(self.embedder, "aembed_query"):
-                vectors = await asyncio.gather(
-                    *(self.embedder.aembed_query(ctx) for ctx in contexts)
+        if precomputed_vectors is not None:
+            vectors = precomputed_vectors
+        else:
+            try:
+                if hasattr(self.embedder, "aembed_queries"):
+                    vectors = await self.embedder.aembed_queries(contexts)
+                elif hasattr(self.embedder, "embed_queries"):
+                    vectors = self.embedder.embed_queries(contexts)
+                elif hasattr(self.embedder, "aembed_query"):
+                    vectors = await asyncio.gather(
+                        *(self.embedder.aembed_query(ctx) for ctx in contexts)
+                    )
+                else:
+                    vectors = [self.embedder.embed_query(ctx) for ctx in contexts]
+            except Exception:
+                logger.warning(
+                    "Failed to generate embeddings in batch. Falling back to exact-match hashing."
                 )
-            else:
-                vectors = [self.embedder.embed_query(ctx) for ctx in contexts]
-        except Exception:
-            logger.warning(
-                "Failed to generate embeddings in batch. Falling back to exact-match hashing."
-            )
-            return [self._hash_context_text(ctx) for ctx in contexts]
+                return [self._hash_context_text(ctx) for ctx in contexts]
 
         resolved_keys = []
         new_contexts_to_save = []
@@ -3215,11 +3233,7 @@ class AsyncBayesianRouter:
                     contexts_to_embed_indices.append(len(prepared_feedbacks) - 1)
 
             if contexts_to_embed:
-                resolved_keys = await self._resolve_context_keys(contexts_to_embed)
-                for idx, key in zip(contexts_to_embed_indices, resolved_keys):
-                    prepared_feedbacks[idx]["context_key"] = key
-
-                if self.mode != "clustering":
+                if self.mode != "clustering" and self.embedder:
                     if hasattr(self.embedder, "aembed_queries"):
                         vectors = await self.embedder.aembed_queries(contexts_to_embed)
                     elif hasattr(self.embedder, "embed_queries"):
@@ -3234,6 +3248,14 @@ class AsyncBayesianRouter:
                         ]
                     for idx, vector in zip(contexts_to_embed_indices, vectors):
                         prepared_feedbacks[idx]["vector"] = vector
+                else:
+                    vectors = None
+
+                resolved_keys = await self._resolve_context_keys(
+                    contexts_to_embed, precomputed_vectors=vectors
+                )
+                for idx, key in zip(contexts_to_embed_indices, resolved_keys):
+                    prepared_feedbacks[idx]["context_key"] = key
 
             if self.mode == "clustering":
                 updates = []
