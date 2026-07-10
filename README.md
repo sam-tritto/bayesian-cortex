@@ -637,6 +637,12 @@ The `cortex://metrics` dashboard exposes rich, live visuals to monitor routing d
 
 ---
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a full history of releases.
+
+---
+
 ## License
 
 MIT
