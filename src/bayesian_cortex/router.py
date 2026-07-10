@@ -29,6 +29,92 @@ from bayesian_cortex.storage import (
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Module-level pure-numpy helpers — shared by BayesianRouter and
+# AsyncBayesianRouter so the LinTS/LinUCB math lives in exactly one place.
+# ---------------------------------------------------------------------------
+
+def _sample_theta(
+    theta_hat: np.ndarray,
+    precision: np.ndarray,
+    exploration_weight: float,
+    diagonal_covariance: bool,
+    d_aug: int,
+) -> np.ndarray:
+    """Draw a posterior parameter sample θ̃ for LinTS (Thompson Sampling for linear bandits).
+
+    For diagonal covariance: samples each dimension independently from
+    N(θ̂_i, v²/A_ii).  For full covariance: uses a Cholesky decomposition of
+    A⁻¹ with a multivariate_normal fallback when the matrix is near-singular.
+    """
+    if diagonal_covariance:
+        std_devs = exploration_weight / np.sqrt(precision)
+        return np.random.normal(theta_hat, std_devs)
+    cov = np.linalg.inv(precision)
+    cov = 0.5 * (cov + cov.T)  # enforce symmetry
+    try:
+        L = np.linalg.cholesky(cov)
+        z = np.random.normal(size=d_aug)
+        return theta_hat + exploration_weight * np.dot(L, z)
+    except np.linalg.LinAlgError:
+        return np.random.multivariate_normal(
+            theta_hat, (exploration_weight ** 2) * cov
+        )
+
+
+def _linear_score(
+    x_augmented: np.ndarray,
+    theta_hat: np.ndarray,
+    precision: np.ndarray,
+    mode: str,
+    exploration_weight: float,
+    diagonal_covariance: bool,
+    theta_sample: Optional[np.ndarray] = None,
+) -> float:
+    """Compute a LinTS or LinUCB acquisition score for one candidate.
+
+    For LinTS (mode='lints'): returns ``dot(x_augmented, theta_sample)``.
+        *theta_sample* must be provided (see :func:`_sample_theta`).
+    For LinUCB (mode='linucb'): returns
+        ``expected_reward + exploration_weight * uncertainty``
+        where uncertainty is the posterior predictive standard deviation.
+    """
+    if mode == "lints":
+        assert theta_sample is not None, "theta_sample required for LinTS"
+        return float(np.dot(x_augmented, theta_sample))
+    # LinUCB
+    expected_reward = float(np.dot(x_augmented, theta_hat))
+    if diagonal_covariance:
+        uncertainty = np.sqrt(np.sum((x_augmented ** 2) / precision))
+    else:
+        cov = np.linalg.inv(precision)
+        uncertainty = np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented)))
+    return expected_reward + exploration_weight * uncertainty
+
+
+def _linear_posterior(
+    x_augmented: np.ndarray,
+    precision: np.ndarray,
+    reward_vector: np.ndarray,
+    diagonal_covariance: bool,
+) -> Tuple[float, float]:
+    """Compute ``(expected_reward, uncertainty)`` from the current linear bandit posterior.
+
+    Returns the posterior mean prediction and the predictive standard deviation
+    for the given augmented feature vector *x_augmented*.
+    """
+    if diagonal_covariance:
+        theta_hat = reward_vector / precision
+        expected_reward = float(np.dot(x_augmented, theta_hat))
+        uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
+    else:
+        theta_hat = np.linalg.solve(precision, reward_vector)
+        expected_reward = float(np.dot(x_augmented, theta_hat))
+        cov = np.linalg.inv(precision)
+        uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
+    return expected_reward, uncertainty
+
+
 class BayesianRouter:
     """
     Decoupled candidate routing middleware implementing a Contextual Multi-Armed Bandit
@@ -531,21 +617,10 @@ class BayesianRouter:
                 else:
                     theta_hat = np.linalg.solve(precision, reward_vector)
 
-                if self.mode == "lints":
-                    if self.diagonal_covariance:
-                        std_devs = self.exploration_weight / np.sqrt(precision)
-                        theta_sample = np.random.normal(theta_hat, std_devs)
-                    else:
-                        cov = np.linalg.inv(precision)
-                        cov = 0.5 * (cov + cov.T)
-                        try:
-                            L = np.linalg.cholesky(cov)
-                            z = np.random.normal(size=d_aug)
-                            theta_sample = theta_hat + self.exploration_weight * np.dot(L, z)
-                        except np.linalg.LinAlgError:
-                            theta_sample = np.random.multivariate_normal(
-                                theta_hat, (self.exploration_weight ** 2) * cov
-                            )
+                theta_sample = _sample_theta(
+                    theta_hat, precision, self.exploration_weight,
+                    self.diagonal_covariance, d_aug,
+                ) if self.mode == "lints" else None
 
                 best_candidate = None
                 highest_score = -float("inf")
@@ -554,16 +629,11 @@ class BayesianRouter:
                     t_a = self._get_candidate_embedding(candidate_name)
                     x_augmented = np.concatenate([x_c, t_a, [1.0]])
 
-                    if self.mode == "lints":
-                        score = float(np.dot(x_augmented, theta_sample))
-                    else:
-                        expected_reward = float(np.dot(x_augmented, theta_hat))
-                        if self.diagonal_covariance:
-                            uncertainty = np.sqrt(np.sum((x_augmented ** 2) / precision))
-                        else:
-                            cov = np.linalg.inv(precision)
-                            uncertainty = np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented)))
-                        score = expected_reward + self.exploration_weight * uncertainty
+                    score = _linear_score(
+                        x_augmented, theta_hat, precision,
+                        self.mode, self.exploration_weight,
+                        self.diagonal_covariance, theta_sample,
+                    )
 
                     if score > highest_score:
                         highest_score = score
@@ -603,30 +673,15 @@ class BayesianRouter:
                     else:
                         theta_hat = np.linalg.solve(precision, reward_vector)
 
-                    if self.mode == "lints":
-                        if self.diagonal_covariance:
-                            std_devs = self.exploration_weight / np.sqrt(precision)
-                            theta_sample = np.random.normal(theta_hat, std_devs)
-                        else:
-                            cov = np.linalg.inv(precision)
-                            cov = 0.5 * (cov + cov.T)
-                            try:
-                                L = np.linalg.cholesky(cov)
-                                z = np.random.normal(size=d_aug)
-                                theta_sample = theta_hat + self.exploration_weight * np.dot(L, z)
-                            except np.linalg.LinAlgError:
-                                theta_sample = np.random.multivariate_normal(
-                                    theta_hat, (self.exploration_weight ** 2) * cov
-                                )
-                        score = float(np.dot(x_augmented, theta_sample))
-                    else:
-                        expected_reward = float(np.dot(x_augmented, theta_hat))
-                        if self.diagonal_covariance:
-                            uncertainty = np.sqrt(np.sum((x_augmented ** 2) / precision))
-                        else:
-                            cov = np.linalg.inv(precision)
-                            uncertainty = np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented)))
-                        score = expected_reward + self.exploration_weight * uncertainty
+                    theta_sample = _sample_theta(
+                        theta_hat, precision, self.exploration_weight,
+                        self.diagonal_covariance, d_aug,
+                    ) if self.mode == "lints" else None
+                    score = _linear_score(
+                        x_augmented, theta_hat, precision,
+                        self.mode, self.exploration_weight,
+                        self.diagonal_covariance, theta_sample,
+                    )
 
                     if score > highest_score:
                         highest_score = score
@@ -737,17 +792,7 @@ class BayesianRouter:
                     diagonal=self.diagonal_covariance,
                 )
 
-                if self.diagonal_covariance:
-                    theta_hat = reward_vector / precision
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
-                else:
-                    theta_hat = np.linalg.solve(precision, reward_vector)
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    cov = np.linalg.inv(precision)
-                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
-
-                return expected_reward, uncertainty
+                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
 
             else:
                 if self.embedder is None:
@@ -772,17 +817,7 @@ class BayesianRouter:
                     diagonal=self.diagonal_covariance,
                 )
                 
-                if self.diagonal_covariance:
-                    theta_hat = reward_vector / precision
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
-                else:
-                    theta_hat = np.linalg.solve(precision, reward_vector)
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    cov = np.linalg.inv(precision)
-                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
-                
-                return expected_reward, uncertainty
+                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
 
         except Exception as e:
             if strict:
@@ -875,17 +910,7 @@ class BayesianRouter:
                     diagonal=self.diagonal_covariance,
                 )
                 
-                if self.diagonal_covariance:
-                    theta_hat = reward_vector / precision
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
-                else:
-                    theta_hat = np.linalg.solve(precision, reward_vector)
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    cov = np.linalg.inv(precision)
-                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
-                
-                return expected_reward, uncertainty
+                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
 
             else:
                 x_seq = self._context_store.get_context_vector(context_key)
@@ -920,17 +945,7 @@ class BayesianRouter:
                     diagonal=self.diagonal_covariance,
                 )
                 
-                if self.diagonal_covariance:
-                    theta_hat = reward_vector / precision
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
-                else:
-                    theta_hat = np.linalg.solve(precision, reward_vector)
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    cov = np.linalg.inv(precision)
-                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
-                
-                return expected_reward, uncertainty
+                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
 
         except Exception as e:
             if strict:
@@ -993,17 +1008,7 @@ class BayesianRouter:
                     reward_vector = np.zeros(d_aug, dtype=np.float32)
                     reward_vector[-1] = self.lambda_val * prior_p
 
-                if self.diagonal_covariance:
-                    theta_hat = reward_vector / precision
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
-                else:
-                    theta_hat = np.linalg.solve(precision, reward_vector)
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    cov = np.linalg.inv(precision)
-                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
-
-                return expected_reward, uncertainty
+                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
 
             else:
                 if self.embedder is None:
@@ -1021,17 +1026,7 @@ class BayesianRouter:
                     reward_vector = np.zeros(d_aug, dtype=np.float32)
                     reward_vector[-1] = self.lambda_val * prior_p
                 
-                if self.diagonal_covariance:
-                    theta_hat = reward_vector / precision
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
-                else:
-                    theta_hat = np.linalg.solve(precision, reward_vector)
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    cov = np.linalg.inv(precision)
-                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
-                
-                return expected_reward, uncertainty
+                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
         except Exception as e:
             logger.exception("BayesianRouter get_candidate_beliefs failed.")
             if self.telemetry_hook:
@@ -1188,21 +1183,10 @@ class BayesianRouter:
                     x_c = np.array(x_seq, dtype=np.float32)
                     context_key = context_keys[idx]
                     
-                    if self.mode == "lints":
-                        if self.diagonal_covariance:
-                            std_devs = self.exploration_weight / np.sqrt(precision)
-                            theta_sample = np.random.normal(theta_hat, std_devs)
-                        else:
-                            cov = np.linalg.inv(precision)
-                            cov = 0.5 * (cov + cov.T)
-                            try:
-                                L = np.linalg.cholesky(cov)
-                                z = np.random.normal(size=d_aug)
-                                theta_sample = theta_hat + self.exploration_weight * np.dot(L, z)
-                            except np.linalg.LinAlgError:
-                                theta_sample = np.random.multivariate_normal(
-                                    theta_hat, (self.exploration_weight ** 2) * cov
-                                )
+                    theta_sample = _sample_theta(
+                        theta_hat, precision, self.exploration_weight,
+                        self.diagonal_covariance, d_aug,
+                    ) if self.mode == "lints" else None
 
                     best_candidate = None
                     highest_score = -float("inf")
@@ -1211,16 +1195,11 @@ class BayesianRouter:
                         t_a = self._get_candidate_embedding(candidate_name)
                         x_augmented = np.concatenate([x_c, t_a, [1.0]])
 
-                        if self.mode == "lints":
-                            score = float(np.dot(x_augmented, theta_sample))
-                        else:
-                            expected_reward = float(np.dot(x_augmented, theta_hat))
-                            if self.diagonal_covariance:
-                                uncertainty = np.sqrt(np.sum((x_augmented ** 2) / precision))
-                            else:
-                                cov = np.linalg.inv(precision)
-                                uncertainty = np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented)))
-                            score = expected_reward + self.exploration_weight * uncertainty
+                        score = _linear_score(
+                            x_augmented, theta_hat, precision,
+                            self.mode, self.exploration_weight,
+                            self.diagonal_covariance, theta_sample,
+                        )
 
                         if score > highest_score:
                             highest_score = score
@@ -1279,30 +1258,15 @@ class BayesianRouter:
                         else:
                             theta_hat = np.linalg.solve(precision, reward_vector)
 
-                        if self.mode == "lints":
-                            if self.diagonal_covariance:
-                                std_devs = self.exploration_weight / np.sqrt(precision)
-                                theta_sample = np.random.normal(theta_hat, std_devs)
-                            else:
-                                cov = np.linalg.inv(precision)
-                                cov = 0.5 * (cov + cov.T)
-                                try:
-                                    L = np.linalg.cholesky(cov)
-                                    z = np.random.normal(size=d_aug)
-                                    theta_sample = theta_hat + self.exploration_weight * np.dot(L, z)
-                                except np.linalg.LinAlgError:
-                                    theta_sample = np.random.multivariate_normal(
-                                        theta_hat, (self.exploration_weight ** 2) * cov
-                                    )
-                            score = float(np.dot(x_augmented, theta_sample))
-                        else:
-                            expected_reward = float(np.dot(x_augmented, theta_hat))
-                            if self.diagonal_covariance:
-                                uncertainty = np.sqrt(np.sum((x_augmented ** 2) / precision))
-                            else:
-                                cov = np.linalg.inv(precision)
-                                uncertainty = np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented)))
-                            score = expected_reward + self.exploration_weight * uncertainty
+                        theta_sample = _sample_theta(
+                            theta_hat, precision, self.exploration_weight,
+                            self.diagonal_covariance, d_aug,
+                        ) if self.mode == "lints" else None
+                        score = _linear_score(
+                            x_augmented, theta_hat, precision,
+                            self.mode, self.exploration_weight,
+                            self.diagonal_covariance, theta_sample,
+                        )
 
                         if score > highest_score:
                             highest_score = score
@@ -1998,21 +1962,10 @@ class AsyncBayesianRouter:
                 else:
                     theta_hat = np.linalg.solve(precision, reward_vector)
 
-                if self.mode == "lints":
-                    if self.diagonal_covariance:
-                        std_devs = self.exploration_weight / np.sqrt(precision)
-                        theta_sample = np.random.normal(theta_hat, std_devs)
-                    else:
-                        cov = np.linalg.inv(precision)
-                        cov = 0.5 * (cov + cov.T)
-                        try:
-                            L = np.linalg.cholesky(cov)
-                            z = np.random.normal(size=d_aug)
-                            theta_sample = theta_hat + self.exploration_weight * np.dot(L, z)
-                        except np.linalg.LinAlgError:
-                            theta_sample = np.random.multivariate_normal(
-                                theta_hat, (self.exploration_weight ** 2) * cov
-                            )
+                theta_sample = _sample_theta(
+                    theta_hat, precision, self.exploration_weight,
+                    self.diagonal_covariance, d_aug,
+                ) if self.mode == "lints" else None
 
                 best_candidate = None
                 highest_score = -float("inf")
@@ -2021,16 +1974,11 @@ class AsyncBayesianRouter:
                     t_a = await self._get_candidate_embedding(candidate_name)
                     x_augmented = np.concatenate([x_c, t_a, [1.0]])
 
-                    if self.mode == "lints":
-                        score = float(np.dot(x_augmented, theta_sample))
-                    else:
-                        expected_reward = float(np.dot(x_augmented, theta_hat))
-                        if self.diagonal_covariance:
-                            uncertainty = np.sqrt(np.sum((x_augmented ** 2) / precision))
-                        else:
-                            cov = np.linalg.inv(precision)
-                            uncertainty = np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented)))
-                        score = expected_reward + self.exploration_weight * uncertainty
+                    score = _linear_score(
+                        x_augmented, theta_hat, precision,
+                        self.mode, self.exploration_weight,
+                        self.diagonal_covariance, theta_sample,
+                    )
 
                     if score > highest_score:
                         highest_score = score
@@ -2076,30 +2024,15 @@ class AsyncBayesianRouter:
                     else:
                         theta_hat = np.linalg.solve(precision, reward_vector)
 
-                    if self.mode == "lints":
-                        if self.diagonal_covariance:
-                            std_devs = self.exploration_weight / np.sqrt(precision)
-                            theta_sample = np.random.normal(theta_hat, std_devs)
-                        else:
-                            cov = np.linalg.inv(precision)
-                            cov = 0.5 * (cov + cov.T)
-                            try:
-                                L = np.linalg.cholesky(cov)
-                                z = np.random.normal(size=d_aug)
-                                theta_sample = theta_hat + self.exploration_weight * np.dot(L, z)
-                            except np.linalg.LinAlgError:
-                                theta_sample = np.random.multivariate_normal(
-                                    theta_hat, (self.exploration_weight ** 2) * cov
-                                )
-                        score = float(np.dot(x_augmented, theta_sample))
-                    else:
-                        expected_reward = float(np.dot(x_augmented, theta_hat))
-                        if self.diagonal_covariance:
-                            uncertainty = np.sqrt(np.sum((x_augmented ** 2) / precision))
-                        else:
-                            cov = np.linalg.inv(precision)
-                            uncertainty = np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented)))
-                        score = expected_reward + self.exploration_weight * uncertainty
+                    theta_sample = _sample_theta(
+                        theta_hat, precision, self.exploration_weight,
+                        self.diagonal_covariance, d_aug,
+                    ) if self.mode == "lints" else None
+                    score = _linear_score(
+                        x_augmented, theta_hat, precision,
+                        self.mode, self.exploration_weight,
+                        self.diagonal_covariance, theta_sample,
+                    )
 
                     if score > highest_score:
                         highest_score = score
@@ -2204,17 +2137,7 @@ class AsyncBayesianRouter:
                     diagonal=self.diagonal_covariance,
                 )
 
-                if self.diagonal_covariance:
-                    theta_hat = reward_vector / precision
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
-                else:
-                    theta_hat = np.linalg.solve(precision, reward_vector)
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    cov = np.linalg.inv(precision)
-                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
-
-                return expected_reward, uncertainty
+                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
 
             else:
                 if self.embedder is None:
@@ -2245,17 +2168,7 @@ class AsyncBayesianRouter:
                     diagonal=self.diagonal_covariance,
                 )
                 
-                if self.diagonal_covariance:
-                    theta_hat = reward_vector / precision
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
-                else:
-                    theta_hat = np.linalg.solve(precision, reward_vector)
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    cov = np.linalg.inv(precision)
-                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
-                
-                return expected_reward, uncertainty
+                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
 
         except Exception as e:
             if strict:
@@ -2341,17 +2254,7 @@ class AsyncBayesianRouter:
                     diagonal=self.diagonal_covariance,
                 )
                 
-                if self.diagonal_covariance:
-                    theta_hat = reward_vector / precision
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
-                else:
-                    theta_hat = np.linalg.solve(precision, reward_vector)
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    cov = np.linalg.inv(precision)
-                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
-                
-                return expected_reward, uncertainty
+                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
 
             else:
                 x_seq = await self._context_store.aget_context_vector(context_key)
@@ -2386,17 +2289,7 @@ class AsyncBayesianRouter:
                     diagonal=self.diagonal_covariance,
                 )
                 
-                if self.diagonal_covariance:
-                    theta_hat = reward_vector / precision
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
-                else:
-                    theta_hat = np.linalg.solve(precision, reward_vector)
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    cov = np.linalg.inv(precision)
-                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
-                
-                return expected_reward, uncertainty
+                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
 
         except Exception as e:
             if strict:
@@ -2459,17 +2352,7 @@ class AsyncBayesianRouter:
                     reward_vector = np.zeros(d_aug, dtype=np.float32)
                     reward_vector[-1] = self.lambda_val * prior_p
 
-                if self.diagonal_covariance:
-                    theta_hat = reward_vector / precision
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
-                else:
-                    theta_hat = np.linalg.solve(precision, reward_vector)
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    cov = np.linalg.inv(precision)
-                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
-
-                return expected_reward, uncertainty
+                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
 
             else:
                 if self.embedder is None:
@@ -2493,17 +2376,7 @@ class AsyncBayesianRouter:
                     reward_vector = np.zeros(d_aug, dtype=np.float32)
                     reward_vector[-1] = self.lambda_val * prior_p
                 
-                if self.diagonal_covariance:
-                    theta_hat = reward_vector / precision
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
-                else:
-                    theta_hat = np.linalg.solve(precision, reward_vector)
-                    expected_reward = float(np.dot(x_augmented, theta_hat))
-                    cov = np.linalg.inv(precision)
-                    uncertainty = float(np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented))))
-                
-                return expected_reward, uncertainty
+                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
         except Exception as e:
             logger.exception("AsyncBayesianRouter aget_candidate_beliefs failed.")
             await self._call_telemetry(
@@ -2668,21 +2541,10 @@ class AsyncBayesianRouter:
                     x_c = np.array(x_seq, dtype=np.float32)
                     context_key = context_keys[idx]
                     
-                    if self.mode == "lints":
-                        if self.diagonal_covariance:
-                            std_devs = self.exploration_weight / np.sqrt(precision)
-                            theta_sample = np.random.normal(theta_hat, std_devs)
-                        else:
-                            cov = np.linalg.inv(precision)
-                            cov = 0.5 * (cov + cov.T)
-                            try:
-                                L = np.linalg.cholesky(cov)
-                                z = np.random.normal(size=d_aug)
-                                theta_sample = theta_hat + self.exploration_weight * np.dot(L, z)
-                            except np.linalg.LinAlgError:
-                                theta_sample = np.random.multivariate_normal(
-                                    theta_hat, (self.exploration_weight ** 2) * cov
-                                )
+                    theta_sample = _sample_theta(
+                        theta_hat, precision, self.exploration_weight,
+                        self.diagonal_covariance, d_aug,
+                    ) if self.mode == "lints" else None
 
                     best_candidate = None
                     highest_score = -float("inf")
@@ -2691,16 +2553,11 @@ class AsyncBayesianRouter:
                         t_a = await self._get_candidate_embedding(candidate_name)
                         x_augmented = np.concatenate([x_c, t_a, [1.0]])
 
-                        if self.mode == "lints":
-                            score = float(np.dot(x_augmented, theta_sample))
-                        else:
-                            expected_reward = float(np.dot(x_augmented, theta_hat))
-                            if self.diagonal_covariance:
-                                uncertainty = np.sqrt(np.sum((x_augmented ** 2) / precision))
-                            else:
-                                cov = np.linalg.inv(precision)
-                                uncertainty = np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented)))
-                            score = expected_reward + self.exploration_weight * uncertainty
+                        score = _linear_score(
+                            x_augmented, theta_hat, precision,
+                            self.mode, self.exploration_weight,
+                            self.diagonal_covariance, theta_sample,
+                        )
 
                         if score > highest_score:
                             highest_score = score
@@ -2763,30 +2620,15 @@ class AsyncBayesianRouter:
                         else:
                             theta_hat = np.linalg.solve(precision, reward_vector)
 
-                        if self.mode == "lints":
-                            if self.diagonal_covariance:
-                                std_devs = self.exploration_weight / np.sqrt(precision)
-                                theta_sample = np.random.normal(theta_hat, std_devs)
-                            else:
-                                cov = np.linalg.inv(precision)
-                                cov = 0.5 * (cov + cov.T)
-                                try:
-                                    L = np.linalg.cholesky(cov)
-                                    z = np.random.normal(size=d_aug)
-                                    theta_sample = theta_hat + self.exploration_weight * np.dot(L, z)
-                                except np.linalg.LinAlgError:
-                                    theta_sample = np.random.multivariate_normal(
-                                        theta_hat, (self.exploration_weight ** 2) * cov
-                                    )
-                            score = float(np.dot(x_augmented, theta_sample))
-                        else:
-                            expected_reward = float(np.dot(x_augmented, theta_hat))
-                            if self.diagonal_covariance:
-                                uncertainty = np.sqrt(np.sum((x_augmented ** 2) / precision))
-                            else:
-                                cov = np.linalg.inv(precision)
-                                uncertainty = np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented)))
-                            score = expected_reward + self.exploration_weight * uncertainty
+                        theta_sample = _sample_theta(
+                            theta_hat, precision, self.exploration_weight,
+                            self.diagonal_covariance, d_aug,
+                        ) if self.mode == "lints" else None
+                        score = _linear_score(
+                            x_augmented, theta_hat, precision,
+                            self.mode, self.exploration_weight,
+                            self.diagonal_covariance, theta_sample,
+                        )
 
                         if score > highest_score:
                             highest_score = score
