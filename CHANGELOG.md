@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Double embedding per route call in linear modes** — `route_with_trace()` /
+  `aroute_with_trace()` and `feedback()` / `afeedback()` were calling
+  `embed_query` twice per invocation for `lints`, `linucb`, and `hybrid` modes:
+  once to obtain the scoring vector and a second time inside
+  `_resolve_context_key`. Both `_resolve_context_key` methods now accept an
+  optional `precomputed_vector` argument; callers pass the vector they already
+  hold, eliminating the redundant API round-trip entirely. `clustering` mode and
+  batch paths (`_resolve_context_keys`) are unaffected.
+
 ---
 
 ## [0.1.3] — 2026-07-09

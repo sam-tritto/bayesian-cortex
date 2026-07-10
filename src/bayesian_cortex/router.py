@@ -254,23 +254,34 @@ class BayesianRouter:
         self._candidate_embedding_cache[candidate_name] = emb
         return emb
 
-    def _resolve_context_key(self, context_text: str) -> str:
+    def _resolve_context_key(
+        self, context_text: str, precomputed_vector: Optional[np.ndarray] = None
+    ) -> str:
         """
         Resolve the given raw context string into a normalized context key.
         If an embedder is active, maps to the closest vector cluster context;
         otherwise, does a direct, exact string lookup.
+
+        Args:
+            precomputed_vector: An already-computed embedding for *context_text*.
+                When provided the method skips the ``embed_query`` call, avoiding
+                a redundant API round-trip for callers that have already embedded
+                the same text (e.g. linear-bandit routing).
         """
         if not self.embedder:
             return self._hash_context_text(context_text)
 
-        try:
-            vector = self.embedder.embed_query(context_text)
-        except Exception:
-            # Fall back to exact string context key if embedding extraction fails
-            logger.warning(
-                "Failed to generate embedding for context. Falling back to exact-match hashing."
-            )
-            return self._hash_context_text(context_text)
+        if precomputed_vector is not None:
+            vector = precomputed_vector
+        else:
+            try:
+                vector = self.embedder.embed_query(context_text)
+            except Exception:
+                # Fall back to exact string context key if embedding extraction fails
+                logger.warning(
+                    "Failed to generate embedding for context. Falling back to exact-match hashing."
+                )
+                return self._hash_context_text(context_text)
 
         # Find nearest vector context in index
         matched_key = self._context_store.get_nearest_context(
@@ -454,7 +465,7 @@ class BayesianRouter:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
                 x_c = np.array(self.embedder.embed_query(context_text), dtype=np.float32)
-                context_key = self._resolve_context_key(context_text)
+                context_key = self._resolve_context_key(context_text, precomputed_vector=x_c)
 
                 if not candidates:
                     raise ValueError("Candidate candidates list cannot be empty")
@@ -523,7 +534,7 @@ class BayesianRouter:
                     raise ValueError("embedder is required for linear bandit mode")
                 x = np.array(self.embedder.embed_query(context_text), dtype=np.float32)
                 d = len(x)
-                context_key = self._resolve_context_key(context_text)
+                context_key = self._resolve_context_key(context_text, precomputed_vector=x)
                 x_augmented = np.append(x, 1.0)
                 d_aug = d + 1
                 
@@ -695,7 +706,7 @@ class BayesianRouter:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
                 x = np.array(self.embedder.embed_query(context_text), dtype=np.float32)
-                context_key = self._resolve_context_key(context_text)
+                context_key = self._resolve_context_key(context_text, precomputed_vector=x)
                 x_augmented = np.append(x, 1.0)
                 
                 if candidate_name in self.priors:
@@ -1649,20 +1660,34 @@ class AsyncBayesianRouter:
         self._candidate_embedding_cache[candidate_name] = emb
         return emb
 
-    async def _resolve_context_key(self, context_text: str) -> str:
+    async def _resolve_context_key(
+        self, context_text: str, precomputed_vector: Optional[np.ndarray] = None
+    ) -> str:
+        """
+        Async variant of :meth:`_resolve_context_key`.
+
+        Args:
+            precomputed_vector: An already-computed embedding for *context_text*.
+                When provided the method skips the ``aembed_query`` call, avoiding
+                a redundant API round-trip for callers that have already embedded
+                the same text (e.g. linear-bandit routing).
+        """
         if not self.embedder:
             return self._hash_context_text(context_text)
 
-        try:
-            if hasattr(self.embedder, "aembed_query"):
-                vector = await self.embedder.aembed_query(context_text)
-            else:
-                vector = self.embedder.embed_query(context_text)
-        except Exception:
-            logger.warning(
-                "Failed to generate embedding for context. Falling back to exact-match hashing."
-            )
-            return self._hash_context_text(context_text)
+        if precomputed_vector is not None:
+            vector = precomputed_vector
+        else:
+            try:
+                if hasattr(self.embedder, "aembed_query"):
+                    vector = await self.embedder.aembed_query(context_text)
+                else:
+                    vector = self.embedder.embed_query(context_text)
+            except Exception:
+                logger.warning(
+                    "Failed to generate embedding for context. Falling back to exact-match hashing."
+                )
+                return self._hash_context_text(context_text)
 
         matched_key = await self._context_store.aget_nearest_context(
             query_vector=vector,
@@ -1857,7 +1882,7 @@ class AsyncBayesianRouter:
                     x_seq = self.embedder.embed_query(context_text)
                 
                 x_c = np.array(x_seq, dtype=np.float32)
-                context_key = await self._resolve_context_key(context_text)
+                context_key = await self._resolve_context_key(context_text, precomputed_vector=x_c)
 
                 if not candidates:
                     raise ValueError("Candidate candidates list cannot be empty")
@@ -1932,7 +1957,7 @@ class AsyncBayesianRouter:
                 
                 x = np.array(x_seq, dtype=np.float32)
                 d = len(x)
-                context_key = await self._resolve_context_key(context_text)
+                context_key = await self._resolve_context_key(context_text, precomputed_vector=x)
                 x_augmented = np.append(x, 1.0)
                 d_aug = d + 1
                 
@@ -2104,7 +2129,7 @@ class AsyncBayesianRouter:
                     x_seq = self.embedder.embed_query(context_text)
                     
                 x = np.array(x_seq, dtype=np.float32)
-                context_key = await self._resolve_context_key(context_text)
+                context_key = await self._resolve_context_key(context_text, precomputed_vector=x)
                 x_augmented = np.append(x, 1.0)
                 
                 if candidate_name in self.priors:
