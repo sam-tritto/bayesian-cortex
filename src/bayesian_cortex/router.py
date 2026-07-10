@@ -219,6 +219,31 @@ class BayesianRouter:
         except Exception:
             pass
 
+    def _get_embedding_dim(self) -> int:
+        """Return the context embedding dimension for the configured embedder.
+
+        Resolution order:
+        1. Probe the live embedder with a sentinel string (authoritative).
+        2. Raise ``RuntimeError`` — cannot safely guess the dimension.
+
+        This is used to build a correctly-shaped zero-vector fallback when a
+        context vector is missing (e.g. after a server restart) so that the
+        precision matrix is never updated with a wrong-shaped vector.
+        """
+        if self.embedder is not None:
+            try:
+                sample = self.embedder.embed_query("__dim_probe__")
+                return len(sample)
+            except Exception as exc:
+                raise RuntimeError(
+                    "Could not determine embedding dimension from the configured embedder. "
+                    "Refusing to use a hardcoded fallback to avoid corrupting the precision matrix."
+                ) from exc
+        raise RuntimeError(
+            "No embedder is configured and the embedding dimension cannot be determined. "
+            "Cannot safely construct a zero-vector fallback."
+        )
+
     def _hash_context_text(self, context_text: str) -> str:
         """
         Normalize the context string (strip and collapse multiple whitespaces)
@@ -801,10 +826,11 @@ class BayesianRouter:
                     logger.warning(
                         f"Context vector not found for key {context_key}. Using zero vector as fallback."
                     )
-                    d = 384
                     precision, _ = self.storage.get_linear_params("__shared_hybrid__")
                     if precision is not None:
                         d = len(precision) - len(t_a) - 1
+                    else:
+                        d = self._get_embedding_dim()
                     x = np.zeros(d, dtype=np.float32)
                 else:
                     x = np.array(x_seq, dtype=np.float32)
@@ -845,10 +871,11 @@ class BayesianRouter:
                     logger.warning(
                         f"Context vector not found for key {context_key}. Using zero vector as fallback."
                     )
-                    d = 384
                     precision, _ = self.storage.get_linear_params(candidate_name)
                     if precision is not None:
                         d = len(precision) - 1
+                    else:
+                        d = self._get_embedding_dim()
                     x = np.zeros(d, dtype=np.float32)
                 else:
                     x = np.array(x_seq, dtype=np.float32)
@@ -1368,10 +1395,11 @@ class BayesianRouter:
                             logger.warning(
                                 f"Context vector not found for key {fb['context_key']}. Using zero vector as fallback."
                             )
-                            d = 384
                             precision, _ = self.storage.get_linear_params("__shared_hybrid__")
                             if precision is not None:
                                 d = len(precision) - len(t_a) - 1
+                            else:
+                                d = self._get_embedding_dim()
                             x = np.zeros(d, dtype=np.float32)
                         else:
                             x = np.array(x_seq, dtype=np.float32)
@@ -1402,10 +1430,11 @@ class BayesianRouter:
                             logger.warning(
                                 f"Context vector not found for key {fb['context_key']}. Using zero vector as fallback."
                             )
-                            d = 384
                             precision, _ = self.storage.get_linear_params(candidate_name)
                             if precision is not None:
                                 d = len(precision) - 1
+                            else:
+                                d = self._get_embedding_dim()
                             x = np.zeros(d, dtype=np.float32)
                         else:
                             x = np.array(x_seq, dtype=np.float32)
@@ -1620,6 +1649,34 @@ class AsyncBayesianRouter:
                     await self.storage.save_vector(key, vector)
         except Exception:
             pass
+
+    async def _aget_embedding_dim(self) -> int:
+        """Return the context embedding dimension for the configured async embedder.
+
+        Resolution order:
+        1. Probe the live embedder with a sentinel string (authoritative).
+        2. Raise ``RuntimeError`` — cannot safely guess the dimension.
+
+        This is used to build a correctly-shaped zero-vector fallback when a
+        context vector is missing (e.g. after a server restart) so that the
+        precision matrix is never updated with a wrong-shaped vector.
+        """
+        if self.embedder is not None:
+            try:
+                if hasattr(self.embedder, "aembed_query"):
+                    sample = await self.embedder.aembed_query("__dim_probe__")
+                else:
+                    sample = self.embedder.embed_query("__dim_probe__")
+                return len(sample)
+            except Exception as exc:
+                raise RuntimeError(
+                    "Could not determine embedding dimension from the configured embedder. "
+                    "Refusing to use a hardcoded fallback to avoid corrupting the precision matrix."
+                ) from exc
+        raise RuntimeError(
+            "No embedder is configured and the embedding dimension cannot be determined. "
+            "Cannot safely construct a zero-vector fallback."
+        )
 
     def _hash_context_text(self, context_text: str) -> str:
         normalized = " ".join(context_text.strip().split())
@@ -2217,10 +2274,11 @@ class AsyncBayesianRouter:
                     logger.warning(
                         f"Context vector not found for key {context_key}. Using zero vector as fallback."
                     )
-                    d = 384
                     precision, _ = await self.storage.aget_linear_params("__shared_hybrid__")
                     if precision is not None:
                         d = len(precision) - len(t_a) - 1
+                    else:
+                        d = await self._aget_embedding_dim()
                     x = np.zeros(d, dtype=np.float32)
                 else:
                     x = np.array(x_seq, dtype=np.float32)
@@ -2261,10 +2319,11 @@ class AsyncBayesianRouter:
                     logger.warning(
                         f"Context vector not found for key {context_key}. Using zero vector as fallback."
                     )
-                    d = 384
                     precision, _ = await self.storage.aget_linear_params(candidate_name)
                     if precision is not None:
                         d = len(precision) - 1
+                    else:
+                        d = await self._aget_embedding_dim()
                     x = np.zeros(d, dtype=np.float32)
                 else:
                     x = np.array(x_seq, dtype=np.float32)
@@ -2804,10 +2863,11 @@ class AsyncBayesianRouter:
                             logger.warning(
                                 f"Context vector not found for key {fb['context_key']}. Using zero vector as fallback."
                             )
-                            d = 384
                             precision, _ = await self.storage.aget_linear_params("__shared_hybrid__")
                             if precision is not None:
                                 d = len(precision) - len(t_a) - 1
+                            else:
+                                d = await self._aget_embedding_dim()
                             x = np.zeros(d, dtype=np.float32)
                         else:
                             x = np.array(x_seq, dtype=np.float32)
@@ -2838,10 +2898,11 @@ class AsyncBayesianRouter:
                             logger.warning(
                                 f"Context vector not found for key {fb['context_key']}. Using zero vector as fallback."
                             )
-                            d = 384
                             precision, _ = await self.storage.aget_linear_params(candidate_name)
                             if precision is not None:
                                 d = len(precision) - 1
+                            else:
+                                d = await self._aget_embedding_dim()
                             x = np.zeros(d, dtype=np.float32)
                         else:
                             x = np.array(x_seq, dtype=np.float32)
