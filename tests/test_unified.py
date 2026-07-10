@@ -1,17 +1,18 @@
-import pytest
 import os
-from unittest.mock import MagicMock
+
+import pytest
 
 from bayesian_cortex import (
-    BayesianRouter,
     AsyncBayesianRouter,
+    BayesianRouter,
 )
 from bayesian_cortex.storage import (
-    InMemoryStorage,
-    SQLiteStorage,
     AsyncInMemoryStorage,
     AsyncSQLiteStorage,
+    InMemoryStorage,
+    SQLiteStorage,
 )
+
 
 def test_initialization_by_backend():
     # 1. Test Sync memory backend
@@ -39,7 +40,9 @@ def test_initialization_by_backend():
     if os.path.exists(db_path_async):
         os.remove(db_path_async)
     try:
-        router_async_sql = AsyncBayesianRouter(storage_backend="sqlite", storage_path=db_path_async)
+        router_async_sql = AsyncBayesianRouter(
+            storage_backend="sqlite", storage_path=db_path_async
+        )
         assert isinstance(router_async_sql.storage, AsyncSQLiteStorage)
         assert router_async_sql.storage.db_path == db_path_async
     finally:
@@ -67,9 +70,17 @@ def test_flexible_parameters_routing_sync():
     # Scenario B: Skill routing with new parameter names
     chosen_skill = router.route(
         context_key="Refactor this legacy asyncio network loop",
-        candidates=["skills/async-expert", "skills/naive-coder", "skills/strict-defensive"],
+        candidates=[
+            "skills/async-expert",
+            "skills/naive-coder",
+            "skills/strict-defensive",
+        ],
     )
-    assert chosen_skill in ["skills/async-expert", "skills/naive-coder", "skills/strict-defensive"]
+    assert chosen_skill in [
+        "skills/async-expert",
+        "skills/naive-coder",
+        "skills/strict-defensive",
+    ]
 
     # Route with trace with aliases
     tool, trace = router.route_with_trace(
@@ -85,9 +96,15 @@ def test_flexible_parameters_routing_sync():
     router.feedback(context_key="Test query key", candidate_name=tool, success=True)
 
     # Beliefs retrieval with aliases
-    a1, b1 = router.get_candidate_beliefs(context_key="Test query key", candidate_name=tool)
-    a2, b2 = router.get_candidate_beliefs(context_key="Test query key", candidate_name=tool)
-    a3, b3 = router.get_candidate_beliefs(context_key="Test query key", candidate_name=tool)
+    a1, b1 = router.get_candidate_beliefs(
+        context_key="Test query key", candidate_name=tool
+    )
+    a2, b2 = router.get_candidate_beliefs(
+        context_key="Test query key", candidate_name=tool
+    )
+    a3, b3 = router.get_candidate_beliefs(
+        context_key="Test query key", candidate_name=tool
+    )
     assert a1 == a2 == a3
     assert b1 == b2 == b3
 
@@ -111,11 +128,17 @@ async def test_flexible_parameters_routing_async():
     assert trace is not None
 
     # afeedback with aliases
-    await router.afeedback(context_key="Build a Next.js application", candidate_name=skill, success=True)
-    await router.afeedback(context_key="Build a Next.js application", candidate_name=skill, reward=1.0)
+    await router.afeedback(
+        context_key="Build a Next.js application", candidate_name=skill, success=True
+    )
+    await router.afeedback(
+        context_key="Build a Next.js application", candidate_name=skill, reward=1.0
+    )
 
     # aget_candidate_beliefs with aliases
-    a, b = await router.aget_candidate_beliefs(context_key="Build a Next.js application", candidate_name=skill)
+    a, b = await router.aget_candidate_beliefs(
+        context_key="Build a Next.js application", candidate_name=skill
+    )
     assert a >= 1.0
     assert b >= 1.0
 
@@ -130,7 +153,9 @@ def test_batch_aliases_sync():
     selected = router.route_batch(contexts=contexts, candidates=candidates)
     assert len(selected) == 2
 
-    selected_traces = router.route_batch_with_trace(contexts=contexts, candidates=candidates)
+    selected_traces = router.route_batch_with_trace(
+        contexts=contexts, candidates=candidates
+    )
     assert len(selected_traces) == 2
 
     # feedback_batch with dict aliases
@@ -152,7 +177,9 @@ async def test_batch_aliases_async():
     selected = await router.aroute_batch(contexts=contexts, candidates=candidates)
     assert len(selected) == 2
 
-    selected_traces = await router.aroute_batch_with_trace(contexts=contexts, candidates=candidates)
+    selected_traces = await router.aroute_batch_with_trace(
+        contexts=contexts, candidates=candidates
+    )
     assert len(selected_traces) == 2
 
     # afeedback_batch with dict aliases

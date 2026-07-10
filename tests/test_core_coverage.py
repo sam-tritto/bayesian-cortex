@@ -20,22 +20,20 @@ Focuses on:
   - reset_candidate_beliefs
   - process_ui_feedback + evaluate_rag_success edge cases
 """
-import math
+
 import numpy as np
 import pytest
-from typing import Sequence
 
-from bayesian_cortex.router import BayesianRouter, AsyncBayesianRouter
-from bayesian_cortex.storage import InMemoryStorage, AsyncInMemoryStorage, SQLiteStorage
 from bayesian_cortex.embeddings import VectorContextStore
 from bayesian_cortex.rag import (
-    check_citation,
+    _map_ui_feedback_to_reward,
     calculate_faithfulness,
+    check_citation,
     evaluate_rag_success,
     process_ui_feedback,
-    _map_ui_feedback_to_reward,
 )
-
+from bayesian_cortex.router import AsyncBayesianRouter, BayesianRouter
+from bayesian_cortex.storage import InMemoryStorage, SQLiteStorage
 
 CANDIDATES = ["tool_a", "tool_b"]
 
@@ -43,6 +41,7 @@ CANDIDATES = ["tool_a", "tool_b"]
 # ===========================================================================
 # Router init validation
 # ===========================================================================
+
 
 class TestRouterInitValidation:
     def test_invalid_mode_raises(self, mem_storage):
@@ -72,7 +71,7 @@ class TestRouterInitValidation:
             storage_backend="sqlite",
             storage_path=str(tmp_path / "shorthand.db"),
         )
-        from bayesian_cortex.storage import SQLiteStorage
+
         assert isinstance(router.storage, SQLiteStorage)
         router.storage.close()
 
@@ -96,6 +95,7 @@ class TestRouterInitValidation:
 # ===========================================================================
 # Clustering mode – decay math precision
 # ===========================================================================
+
 
 class TestClusteringDecayMath:
     """Verify the exact beta-binomial posterior update formula."""
@@ -164,6 +164,7 @@ class TestClusteringDecayMath:
 # feedback_by_trace – linear modes context-vector lookup
 # ===========================================================================
 
+
 class TestFeedbackByTraceLookup:
     """
     When feedback_by_trace is called on a linear bandit, the router must
@@ -192,6 +193,7 @@ class TestFeedbackByTraceLookup:
 # ===========================================================================
 # Linear modes – diagonal covariance path
 # ===========================================================================
+
 
 class TestLinearDiagonalCovariance:
     def test_lints_diagonal_route_and_feedback(self, mem_storage, det_embedder):
@@ -241,11 +243,12 @@ class TestLinearDiagonalCovariance:
 # get_candidate_beliefs on all modes
 # ===========================================================================
 
+
 class TestGetCandidateBeliefs:
     def test_clustering_beliefs_returns_alpha_beta(self, clustering_router):
         clustering_router.feedback("ctx", "tool_a", success=True)
         alpha, beta = clustering_router.get_candidate_beliefs("ctx", "tool_a")
-        assert alpha > 1.0   # updated
+        assert alpha > 1.0  # updated
         assert beta == pytest.approx(1.0)
 
     def test_lints_beliefs_returns_mean_and_uncertainty(self, lints_router):
@@ -269,6 +272,7 @@ class TestGetCandidateBeliefs:
 # ===========================================================================
 # Batch routing – clustering mode
 # ===========================================================================
+
 
 class TestBatchRoutingClustering:
     def test_route_batch_returns_correct_length(self, clustering_router):
@@ -302,6 +306,7 @@ class TestBatchRoutingClustering:
 # Batch routing – linear modes
 # ===========================================================================
 
+
 class TestBatchRoutingLinear:
     def test_lints_batch_route_and_feedback(self, lints_router):
         contexts = ["math problem", "general query"]
@@ -318,8 +323,16 @@ class TestBatchRoutingLinear:
         traces = linucb_router.route_batch_with_trace(contexts, CANDIDATES)
         assert len(traces) == 2
         feedbacks = [
-            {"context_text": "equation solving", "candidate_name": traces[0][0], "reward": 1.0},
-            {"context_text": "web search", "candidate_name": traces[1][0], "reward": 0.0},
+            {
+                "context_text": "equation solving",
+                "candidate_name": traces[0][0],
+                "reward": 1.0,
+            },
+            {
+                "context_text": "web search",
+                "candidate_name": traces[1][0],
+                "reward": 0.0,
+            },
         ]
         linucb_router.feedback_batch(feedbacks)
 
@@ -327,6 +340,7 @@ class TestBatchRoutingLinear:
 # ===========================================================================
 # VectorContextStore edge cases
 # ===========================================================================
+
 
 class TestVectorContextStoreEdgeCases:
     def test_empty_store_returns_none(self):
@@ -367,20 +381,27 @@ class TestVectorContextStoreEdgeCases:
 # InMemoryStorage – linear param updates
 # ===========================================================================
 
+
 class TestInMemoryStorageLinear:
     def test_decay_and_update_linear_diagonal(self, mem_storage):
         storage = mem_storage
         x = np.array([1.0, 0.0, 1.0], dtype=np.float32)
-        p1, r1 = storage.decay_and_update_linear("cand_a", 1.0, 1.0, x, 1.0, 0.5, diagonal=True)
+        p1, r1 = storage.decay_and_update_linear(
+            "cand_a", 1.0, 1.0, x, 1.0, 0.5, diagonal=True
+        )
         assert p1 is not None
         # Second update should decay and accumulate
-        p2, r2 = storage.decay_and_update_linear("cand_a", 0.9, 0.0, x, 1.0, 0.5, diagonal=True)
+        p2, r2 = storage.decay_and_update_linear(
+            "cand_a", 0.9, 0.0, x, 1.0, 0.5, diagonal=True
+        )
         assert np.all(p2 > 0)
 
     def test_decay_and_update_linear_full_matrix(self, mem_storage):
         storage = mem_storage
         x = np.array([1.0, 0.0, 1.0], dtype=np.float32)
-        p1, r1 = storage.decay_and_update_linear("cand_b", 1.0, 1.0, x, 1.0, 0.5, diagonal=False)
+        p1, r1 = storage.decay_and_update_linear(
+            "cand_b", 1.0, 1.0, x, 1.0, 0.5, diagonal=False
+        )
         assert p1.shape == (3, 3)
         # Verify it's positive definite (all eigenvalues > 0)
         eigvals = np.linalg.eigvalsh(p1)
@@ -418,11 +439,14 @@ class TestInMemoryStorageLinear:
 # SQLiteStorage – linear params round-trip
 # ===========================================================================
 
+
 class TestSQLiteStorageLinear:
     def test_linear_params_persist_and_reload(self, sqlite_storage, tmp_path):
-        from bayesian_cortex.storage import SQLiteStorage
+
         x = np.array([1.0, 0.5, 1.0], dtype=np.float32)
-        sqlite_storage.decay_and_update_linear("tool_x", 1.0, 1.0, x, 1.0, 0.5, diagonal=True)
+        sqlite_storage.decay_and_update_linear(
+            "tool_x", 1.0, 1.0, x, 1.0, 0.5, diagonal=True
+        )
         # Open a fresh connection to the same file
         db2 = SQLiteStorage(db_path=str(tmp_path / "test.db"))
         p, r = db2.get_linear_params("tool_x")
@@ -431,9 +455,11 @@ class TestSQLiteStorageLinear:
         db2.close()
 
     def test_linear_params_full_matrix_persist(self, sqlite_storage, tmp_path):
-        from bayesian_cortex.storage import SQLiteStorage
+
         x = np.array([1.0, 0.0, 1.0], dtype=np.float32)
-        sqlite_storage.decay_and_update_linear("tool_y", 1.0, 1.0, x, 1.0, 0.5, diagonal=False)
+        sqlite_storage.decay_and_update_linear(
+            "tool_y", 1.0, 1.0, x, 1.0, 0.5, diagonal=False
+        )
         db2 = SQLiteStorage(db_path=str(tmp_path / "test.db"))
         p, r = db2.get_linear_params("tool_y")
         assert p.shape == (3, 3)
@@ -443,6 +469,7 @@ class TestSQLiteStorageLinear:
 # ===========================================================================
 # BaseStorage fallback batch implementations
 # ===========================================================================
+
 
 class TestBaseStorageFallbackBatch:
     """
@@ -454,6 +481,7 @@ class TestBaseStorageFallbackBatch:
     def test_base_get_candidate_params_batch_fallback(self, mem_storage):
         # Create a minimal storage that doesn't override the batch methods
         from bayesian_cortex.storage import BaseStorage
+
         storage = mem_storage
         storage.update_candidate_params("ctx_x", "tool_a", 5.0, 3.0)
         keys = [("ctx_x", "tool_a"), ("ctx_x", "tool_b")]
@@ -464,6 +492,7 @@ class TestBaseStorageFallbackBatch:
 
     def test_base_save_vectors_fallback(self, mem_storage):
         from bayesian_cortex.storage import BaseStorage
+
         storage = mem_storage
         BaseStorage.save_vectors(storage, {"k1": [1.0, 2.0], "k2": [3.0, 4.0]})
         vecs = storage.load_all_vectors()
@@ -474,6 +503,7 @@ class TestBaseStorageFallbackBatch:
 # ===========================================================================
 # RAG helpers – edge cases
 # ===========================================================================
+
 
 class TestRAGHelpers:
     def test_check_citation_empty_response_false(self):
@@ -501,7 +531,9 @@ class TestRAGHelpers:
         assert score < 0.5
 
     def test_calculate_faithfulness_string_source(self):
-        score = calculate_faithfulness("four weeks vacation", "four weeks vacation allowed")
+        score = calculate_faithfulness(
+            "four weeks vacation", "four weeks vacation allowed"
+        )
         assert score > 0.0
 
     def test_evaluate_rag_success_combined(self):
@@ -544,9 +576,12 @@ class TestRAGHelpers:
 # Async clustering router – basic smoke tests
 # ===========================================================================
 
+
 @pytest.mark.anyio
 async def test_async_router_route_and_feedback(async_clustering_router):
-    name, trace = await async_clustering_router.aroute_with_trace("ctx", ["tool_a", "tool_b"])
+    name, trace = await async_clustering_router.aroute_with_trace(
+        "ctx", ["tool_a", "tool_b"]
+    )
     assert name in ["tool_a", "tool_b"]
     await async_clustering_router.afeedback_by_trace(trace, reward=1.0)
 
@@ -575,8 +610,11 @@ async def test_async_router_get_beliefs(async_clustering_router):
 # reset_candidate_beliefs
 # ===========================================================================
 
+
 class TestManualBeliefReset:
-    def test_manual_reset_via_update_candidate_params(self, clustering_router, mem_storage):
+    def test_manual_reset_via_update_candidate_params(
+        self, clustering_router, mem_storage
+    ):
         # Build up state
         for _ in range(5):
             clustering_router.feedback("ctx", "tool_a", success=True)
@@ -595,6 +633,7 @@ class TestManualBeliefReset:
 # feedback() strict= mode
 # ===========================================================================
 
+
 class TestFeedbackStrictMode:
     """
     Verify that feedback(strict=True) re-raises storage exceptions instead of
@@ -603,11 +642,10 @@ class TestFeedbackStrictMode:
 
     def _make_crashing_storage(self):
         """Return an InMemoryStorage whose decay_and_update always raises."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock
+
         storage = InMemoryStorage()
-        storage.decay_and_update = MagicMock(
-            side_effect=RuntimeError("DB locked")
-        )
+        storage.decay_and_update = MagicMock(side_effect=RuntimeError("DB locked"))
         return storage
 
     def test_feedback_strict_false_swallows_error(self):
@@ -631,26 +669,36 @@ class TestFeedbackStrictMode:
         result = router.feedback("ctx", "tool_a", success=True)
         assert result == (1.0, 1.0)
 
-    def test_feedback_strict_true_with_lints_embedder_crash(self, det_embedder, mem_storage):
+    def test_feedback_strict_true_with_lints_embedder_crash(
+        self, det_embedder, mem_storage
+    ):
         """Crash inside embedder call is also re-raised when strict=True."""
         from unittest.mock import patch
+
         router = BayesianRouter(
             storage=mem_storage,
             embedder=det_embedder,
             mode="lints",
         )
-        with patch.object(det_embedder, "embed_query", side_effect=RuntimeError("embed offline")):
+        with patch.object(
+            det_embedder, "embed_query", side_effect=RuntimeError("embed offline")
+        ):
             with pytest.raises(RuntimeError, match="embed offline"):
                 router.feedback("math ctx", "tool_a", success=True, strict=True)
 
-    def test_feedback_strict_false_with_lints_embedder_crash(self, det_embedder, mem_storage):
+    def test_feedback_strict_false_with_lints_embedder_crash(
+        self, det_embedder, mem_storage
+    ):
         from unittest.mock import patch
+
         router = BayesianRouter(
             storage=mem_storage,
             embedder=det_embedder,
             mode="lints",
         )
-        with patch.object(det_embedder, "embed_query", side_effect=RuntimeError("embed offline")):
+        with patch.object(
+            det_embedder, "embed_query", side_effect=RuntimeError("embed offline")
+        ):
             result = router.feedback("math ctx", "tool_a", success=True, strict=False)
         assert result == (1.0, 1.0)
 
@@ -659,7 +707,10 @@ class TestFeedbackStrictMode:
         """Async variant: afeedback(strict=True) should also re-raise."""
         storage = async_mem_storage
         from unittest.mock import AsyncMock
-        storage.decay_and_update = AsyncMock(side_effect=RuntimeError("async DB locked"))
+
+        storage.decay_and_update = AsyncMock(
+            side_effect=RuntimeError("async DB locked")
+        )
         router = AsyncBayesianRouter(storage=storage)
         with pytest.raises(RuntimeError, match="async DB locked"):
             await router.afeedback("ctx", "tool_a", success=True, strict=True)
@@ -668,7 +719,10 @@ class TestFeedbackStrictMode:
     async def test_afeedback_strict_false_swallows(self, async_mem_storage):
         storage = async_mem_storage
         from unittest.mock import AsyncMock
-        storage.decay_and_update = AsyncMock(side_effect=RuntimeError("async DB locked"))
+
+        storage.decay_and_update = AsyncMock(
+            side_effect=RuntimeError("async DB locked")
+        )
         router = AsyncBayesianRouter(storage=storage)
         result = await router.afeedback("ctx", "tool_a", success=True, strict=False)
         assert result == (1.0, 1.0)

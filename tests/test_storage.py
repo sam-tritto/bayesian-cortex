@@ -3,14 +3,12 @@ import sqlite3
 import tempfile
 from unittest.mock import MagicMock
 
-import pytest
-
-from bayesian_cortex.storage import InMemoryStorage, RedisStorage, SQLiteStorage
+from bayesian_cortex.storage import RedisStorage, SQLiteStorage
 
 
 def test_in_memory_storage(mem_storage):
     storage = mem_storage
-    
+
     # Defaults
     alpha, beta = storage.get_candidate_params("ctx_test", "tool_a")
     assert alpha == 1.0
@@ -42,7 +40,7 @@ def test_in_memory_storage(mem_storage):
 
 def test_sqlite_storage(sqlite_storage):
     storage = sqlite_storage
-    
+
     # Test defaults
     a, b = storage.get_candidate_params("ctx_1", "tool_1")
     assert a == 1.0
@@ -75,15 +73,15 @@ def test_sqlite_storage(sqlite_storage):
 def test_redis_storage():
     mock_client = MagicMock()
     mock_script = MagicMock()
-    
+
     # Setup Lua script return
     mock_script.return_value = ["1.5", "2.5"]
     mock_client.register_script.return_value = mock_script
-    
+
     # HGET setup
     mock_client.hget.side_effect = lambda key, field: {
         "bayesian_cortex:ctx_1:tool_1:alpha": b"10.0",
-        "bayesian_cortex:ctx_1:tool_1:beta": b"5.0"
+        "bayesian_cortex:ctx_1:tool_1:beta": b"5.0",
     }.get(f"{key}:{field}", None)
 
     # GET setup for metadata
@@ -95,12 +93,11 @@ def test_redis_storage():
     a, b = storage.get_candidate_params("ctx_1", "tool_1")
     assert a == 10.0
     assert b == 5.0
-    
+
     # Update params
     storage.update_candidate_params("ctx_1", "tool_1", 12.0, 6.0)
     mock_client.hset.assert_called_with(
-        "bayesian_cortex:ctx_1",
-        mapping={"tool_1:alpha": "12.0", "tool_1:beta": "6.0"}
+        "bayesian_cortex:ctx_1", mapping={"tool_1:alpha": "12.0", "tool_1:beta": "6.0"}
     )
 
     # Decay & Update
@@ -109,31 +106,34 @@ def test_redis_storage():
     assert new_b == 2.5
     mock_script.assert_called_with(
         keys=["bayesian_cortex:ctx_1"],
-        args=["tool_1:alpha", "tool_1:beta", "0.9", "1.0"]
+        args=["tool_1:alpha", "tool_1:beta", "0.9", "1.0"],
     )
 
     # Metadata
     assert storage.load_metadata("some_key") == "meta_value"
     mock_client.get.assert_called_with("bayesian_cortex:metadata:some_key")
-    
+
     storage.save_metadata("some_key", "new_val")
     mock_client.set.assert_called_with("bayesian_cortex:metadata:some_key", "new_val")
 
 
 def test_sqlite_storage_incremental_and_migration():
     import json
+
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
         db_path = tmp.name
-    
+
     try:
         # 1. Preseed with legacy metadata to simulate a legacy DB
         conn = sqlite3.connect(db_path)
         with conn:
-            conn.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, val TEXT)")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, val TEXT)"
+            )
             legacy_data = {"ctx_legacy_1": [0.1, 0.2], "ctx_legacy_2": [0.3, 0.4]}
             conn.execute(
                 "INSERT INTO metadata (key, val) VALUES (?, ?)",
-                ("vector_context_store", json.dumps(legacy_data))
+                ("vector_context_store", json.dumps(legacy_data)),
             )
         conn.close()
 
@@ -145,7 +145,7 @@ def test_sqlite_storage_incremental_and_migration():
 
         # 3. Test saving a new vector incrementally
         storage.save_vector("ctx_new", [0.5, 0.6])
-        
+
         # Verify the new vector is in the loaded set
         updated_vectors = storage.load_all_vectors()
         assert updated_vectors["ctx_legacy_1"] == [0.1, 0.2]
@@ -155,7 +155,10 @@ def test_sqlite_storage_incremental_and_migration():
         # Verify the database table 'context_vectors' actually contains the rows
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT context_key, vector FROM context_vectors WHERE context_key = ?", ("ctx_new",))
+        cursor.execute(
+            "SELECT context_key, vector FROM context_vectors WHERE context_key = ?",
+            ("ctx_new",),
+        )
         row = cursor.fetchone()
         assert row is not None
         assert json.loads(row[1]) == [0.5, 0.6]
@@ -169,16 +172,19 @@ def test_sqlite_storage_incremental_and_migration():
 
 def test_redis_storage_incremental_and_migration():
     import json
+
     mock_client = MagicMock()
-    
+
     # Simulate empty context_vectors hash initially
     # If hgetall is called on non-existent hash, it returns empty dict
     mock_client.hgetall.return_value = {}
-    
+
     # Setup legacy metadata return when requested
     legacy_data = {"ctx_legacy_1": [0.5, 0.5]}
     mock_client.get.side_effect = lambda key: {
-        "bayesian_cortex:metadata:vector_context_store": json.dumps(legacy_data).encode("utf-8")
+        "bayesian_cortex:metadata:vector_context_store": json.dumps(legacy_data).encode(
+            "utf-8"
+        )
     }.get(key, None)
 
     storage = RedisStorage(mock_client, prefix="bayesian_cortex:")
@@ -186,41 +192,39 @@ def test_redis_storage_incremental_and_migration():
     # 1. Trigger load_all_vectors, which should fallback and migrate
     vectors = storage.load_all_vectors()
     assert vectors == legacy_data
-    
+
     # Verify migration writes to the context_vectors hash
     mock_client.hset.assert_any_call(
         "bayesian_cortex:context_vectors",
-        mapping={"ctx_legacy_1": json.dumps([0.5, 0.5])}
+        mapping={"ctx_legacy_1": json.dumps([0.5, 0.5])},
     )
 
     # 2. Test saving vector incrementally
     storage.save_vector("ctx_new", [0.9, 0.1])
     mock_client.hset.assert_called_with(
-        "bayesian_cortex:context_vectors",
-        key="ctx_new",
-        value=json.dumps([0.9, 0.1])
+        "bayesian_cortex:context_vectors", key="ctx_new", value=json.dumps([0.9, 0.1])
     )
 
 
 def test_sqlite_storage_wal_and_timeout():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
         db_path = tmp.name
-    
+
     try:
         storage = SQLiteStorage(db_path)
         conn = storage._get_conn()
-        
+
         # Check journal mode is WAL
         cursor = conn.cursor()
         cursor.execute("PRAGMA journal_mode;")
         journal_mode = cursor.fetchone()[0]
         assert journal_mode.lower() == "wal"
-        
+
         # Check busy_timeout is 5000 (ms)
         cursor.execute("PRAGMA busy_timeout;")
         busy_timeout = cursor.fetchone()[0]
         assert busy_timeout == 5000
-        
+
         storage.close()
     finally:
         if os.path.exists(db_path):
@@ -255,5 +259,3 @@ def test_storage_selection_logging(mem_storage, sqlite_storage):
     sql_store.log_feedback("trace_sql_1", 0.0)
     logs_updated = sql_store.get_selection_logs()
     assert logs_updated[0]["reward"] == 0.0
-
-

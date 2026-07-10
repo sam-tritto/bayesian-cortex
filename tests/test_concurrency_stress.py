@@ -9,9 +9,10 @@ exponential backoff retry decorator successfully handle extreme concurrency
 import asyncio
 import os
 import tempfile
-import pytest
-import numpy as np
 from typing import List
+
+import numpy as np
+import pytest
 
 from bayesian_cortex.router import AsyncBayesianRouter
 from bayesian_cortex.storage import AsyncSQLiteStorage
@@ -19,6 +20,7 @@ from bayesian_cortex.storage import AsyncSQLiteStorage
 
 class SimpleMockEmbedder:
     """Mock embedder returning a deterministic 3-dimensional vector."""
+
     def __init__(self, dimension: int = 3):
         self.dimension = dimension
 
@@ -44,12 +46,12 @@ async def test_sqlite_concurrency_stress_clustering():
     try:
         # Max connections = 5 and a short timeout to aggressively trigger locks and exercise retry logic
         storage = AsyncSQLiteStorage(db_path=db_path, max_connections=5, timeout=2.0)
-        
+
         router = AsyncBayesianRouter(
             storage=storage,
             mode="clustering",
             decay_factor=1.0,  # 1.0 to ensure exact summing of updates
-            embedder=None
+            embedder=None,
         )
 
         candidates = ["cand_0", "cand_1", "cand_2"]
@@ -71,10 +73,12 @@ async def test_sqlite_concurrency_stress_clustering():
             resolved_key = router._hash_context_text(context_key)
             for cand in candidates:
                 alpha, beta = await storage.get_candidate_params(resolved_key, cand)
-                total_alpha_diff += (alpha - 1.0)
+                total_alpha_diff += alpha - 1.0
 
-        assert total_alpha_diff == 1000.0, f"Expected total alpha difference of 1000.0, got {total_alpha_diff}"
-        
+        assert (
+            total_alpha_diff == 1000.0
+        ), f"Expected total alpha difference of 1000.0, got {total_alpha_diff}"
+
         await storage.close()
 
     finally:
@@ -105,7 +109,7 @@ async def test_sqlite_concurrency_stress_linear():
     try:
         storage = AsyncSQLiteStorage(db_path=db_path, max_connections=5, timeout=2.0)
         embedder = SimpleMockEmbedder(dimension=3)
-        
+
         router = AsyncBayesianRouter(
             storage=storage,
             embedder=embedder,
@@ -114,7 +118,7 @@ async def test_sqlite_concurrency_stress_linear():
             diagonal_covariance=True,
             exploration_weight=0.5,
             lambda_val=1.0,
-            similarity_threshold=0.0  # Maps all contexts to the same context key
+            similarity_threshold=0.0,  # Maps all contexts to the same context key
         )
 
         candidates = ["cand_0", "cand_1", "cand_2"]

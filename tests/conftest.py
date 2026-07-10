@@ -1,23 +1,25 @@
 """
 Shared pytest fixtures for BayesianCortex tests.
 """
+
 from typing import Sequence
 
 import pytest
 
-from bayesian_cortex.router import BayesianRouter, AsyncBayesianRouter
-from bayesian_cortex.storage import InMemoryStorage, AsyncInMemoryStorage
-
+from bayesian_cortex.router import AsyncBayesianRouter, BayesianRouter
+from bayesian_cortex.storage import AsyncInMemoryStorage, InMemoryStorage
 
 # ---------------------------------------------------------------------------
 # Mock embedders
 # ---------------------------------------------------------------------------
+
 
 class DeterministicEmbedder:
     """
     Returns a 2-D unit vector based on keyword in text.
     'math'/'calc'/'sum'/'equation' -> [1, 0], everything else -> [0, 1].
     """
+
     def embed_query(self, text: str) -> Sequence[float]:
         if any(kw in text.lower() for kw in ("math", "calc", "sum", "equation")):
             return [1.0, 0.0]
@@ -35,6 +37,7 @@ class DeterministicEmbedder:
 
 class CrashingEmbedder:
     """Always raises – used to test fallback paths."""
+
     def embed_query(self, text: str) -> Sequence[float]:
         raise RuntimeError("Embedder offline")
 
@@ -45,6 +48,7 @@ class CrashingEmbedder:
 # ---------------------------------------------------------------------------
 # Fixtures – storage
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def mem_storage() -> InMemoryStorage:
@@ -59,6 +63,7 @@ def async_mem_storage() -> AsyncInMemoryStorage:
 @pytest.fixture
 def sqlite_storage(tmp_path):
     from bayesian_cortex.storage import SQLiteStorage
+
     db = SQLiteStorage(db_path=str(tmp_path / "test.db"))
     yield db
     db.close()
@@ -67,6 +72,7 @@ def sqlite_storage(tmp_path):
 @pytest.fixture
 async def async_sqlite_storage(tmp_path):
     from bayesian_cortex.storage import AsyncSQLiteStorage
+
     db = AsyncSQLiteStorage(db_path=str(tmp_path / "test_async.db"))
     yield db
     await db.close()
@@ -75,6 +81,7 @@ async def async_sqlite_storage(tmp_path):
 # ---------------------------------------------------------------------------
 # Fixtures – embedders
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def det_embedder() -> DeterministicEmbedder:
@@ -89,6 +96,7 @@ def crashing_embedder() -> CrashingEmbedder:
 # ---------------------------------------------------------------------------
 # Fixtures – pre-built routers
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def clustering_router(mem_storage) -> BayesianRouter:

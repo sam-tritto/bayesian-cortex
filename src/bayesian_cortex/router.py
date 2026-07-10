@@ -12,7 +12,6 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 
 from bayesian_cortex.embeddings import (
-    AsyncContextEmbedder,
     AsyncVectorContextStore,
     AsyncVectorStoreProtocol,
     ContextEmbedder,
@@ -33,6 +32,7 @@ logger = logging.getLogger(__name__)
 # Module-level pure-numpy helpers — shared by BayesianRouter and
 # AsyncBayesianRouter so the LinTS/LinUCB math lives in exactly one place.
 # ---------------------------------------------------------------------------
+
 
 def _sample_theta(
     theta_hat: np.ndarray,
@@ -57,9 +57,7 @@ def _sample_theta(
         z = np.random.normal(size=d_aug)
         return theta_hat + exploration_weight * np.dot(L, z)
     except np.linalg.LinAlgError:
-        return np.random.multivariate_normal(
-            theta_hat, (exploration_weight ** 2) * cov
-        )
+        return np.random.multivariate_normal(theta_hat, (exploration_weight**2) * cov)
 
 
 def _linear_score(
@@ -85,7 +83,7 @@ def _linear_score(
     # LinUCB
     expected_reward = float(np.dot(x_augmented, theta_hat))
     if diagonal_covariance:
-        uncertainty = np.sqrt(np.sum((x_augmented ** 2) / precision))
+        uncertainty = np.sqrt(np.sum((x_augmented**2) / precision))
     else:
         cov = np.linalg.inv(precision)
         uncertainty = np.sqrt(np.dot(x_augmented, np.dot(cov, x_augmented)))
@@ -106,7 +104,7 @@ def _linear_posterior(
     if diagonal_covariance:
         theta_hat = reward_vector / precision
         expected_reward = float(np.dot(x_augmented, theta_hat))
-        uncertainty = float(np.sqrt(np.sum((x_augmented ** 2) / precision)))
+        uncertainty = float(np.sqrt(np.sum((x_augmented**2) / precision)))
     else:
         theta_hat = np.linalg.solve(precision, reward_vector)
         expected_reward = float(np.dot(x_augmented, theta_hat))
@@ -131,14 +129,18 @@ class BayesianRouter:
         contextual_priors: Optional[List[Dict[str, Any]]] = None,
         vector_store: Optional[VectorStoreProtocol] = None,
         fallback_candidate: Optional[str] = None,
-        telemetry_hook: Optional[Callable[[str, Exception, Dict[str, Any]], None]] = None,
+        telemetry_hook: Optional[
+            Callable[[str, Exception, Dict[str, Any]], None]
+        ] = None,
         mode: str = "clustering",
         exploration_weight: float = 1.0,
         lambda_val: float = 1.0,
         diagonal_covariance: bool = False,
         secret_key: Optional[Union[str, bytes]] = None,
         hybrid: bool = False,
-        candidate_embeddings: Optional[Dict[str, Union[Sequence[float], np.ndarray]]] = None,
+        candidate_embeddings: Optional[
+            Dict[str, Union[Sequence[float], np.ndarray]]
+        ] = None,
         candidate_metadata: Optional[Dict[str, str]] = None,
         storage_backend: Optional[str] = None,
         storage_path: Optional[str] = None,
@@ -173,11 +175,16 @@ class BayesianRouter:
             storage_kwargs = storage_kwargs or {}
             if storage_backend == "sqlite":
                 from bayesian_cortex.storage import SQLiteStorage
-                storage = SQLiteStorage(db_path=storage_path or "bayesian_cortex.db", **storage_kwargs)
+
+                storage = SQLiteStorage(
+                    db_path=storage_path or "bayesian_cortex.db", **storage_kwargs
+                )
             elif storage_backend == "redis":
                 from bayesian_cortex.storage import RedisStorage
+
                 if isinstance(storage_path, str) or storage_path is None:
                     import redis
+
                     client = redis.from_url(storage_path or "redis://localhost:6379")
                 else:
                     client = storage_path
@@ -191,7 +198,7 @@ class BayesianRouter:
         self.embedder = embedder
         self.fallback_candidate = fallback_candidate
         self.telemetry_hook = telemetry_hook
-        
+
         self.mode = mode
         if mode not in ("clustering", "lints", "linucb"):
             raise ValueError("mode must be 'clustering', 'lints', or 'linucb'")
@@ -204,7 +211,9 @@ class BayesianRouter:
         self._candidate_embedding_cache: Dict[str, np.ndarray] = {}
 
         if self.hybrid and self.mode not in ("lints", "linucb"):
-            raise ValueError("Hybrid mode is only supported with linear bandit modes ('lints', 'linucb').")
+            raise ValueError(
+                "Hybrid mode is only supported with linear bandit modes ('lints', 'linucb')."
+            )
 
         # Determine secret key for signing trace IDs
         if secret_key is not None:
@@ -220,14 +229,16 @@ class BayesianRouter:
                 self.secret_key = os.urandom(32)
 
         if self.mode in ("lints", "linucb") and self.embedder is None:
-            raise ValueError("Linear bandit modes ('lints', 'linucb') require a ContextEmbedder.")
+            raise ValueError(
+                "Linear bandit modes ('lints', 'linucb') require a ContextEmbedder."
+            )
 
         if embedder is None:
             logger.warning(
                 "No ContextEmbedder provided. Operating in exact-match fallback mode. "
                 "For contextual tasks with semantic variation, providing an embedder is highly recommended."
             )
-        
+
         if not (0.0 < decay_factor <= 1.0):
             raise ValueError("decay_factor must be in the range (0, 1]")
         self.decay_factor = decay_factor
@@ -240,39 +251,61 @@ class BayesianRouter:
             for item in contextual_priors:
                 parsed_item = {}
                 if "priors" not in item or not isinstance(item["priors"], dict):
-                    raise ValueError("Each contextual prior must contain a 'priors' dictionary.")
-                
+                    raise ValueError(
+                        "Each contextual prior must contain a 'priors' dictionary."
+                    )
+
                 priors_map = {}
                 for t_name, params in item["priors"].items():
                     if not isinstance(params, (list, tuple)) or len(params) != 2:
-                        raise ValueError(f"Prior parameters for candidate '{t_name}' must be a tuple/list of (alpha, beta).")
+                        raise ValueError(
+                            f"Prior parameters for candidate '{t_name}' must be a tuple/list of (alpha, beta)."
+                        )
                     priors_map[t_name] = (float(params[0]), float(params[1]))
                 parsed_item["priors"] = priors_map
 
                 if "pattern" in item:
                     if not isinstance(item["pattern"], str):
-                        raise ValueError("Contextual prior pattern must be a regex string.")
+                        raise ValueError(
+                            "Contextual prior pattern must be a regex string."
+                        )
                     try:
                         parsed_item["pattern"] = re.compile(item["pattern"])
                     except re.error as e:
-                        raise ValueError(f"Invalid regex pattern '{item['pattern']}': {e}")
-                
+                        raise ValueError(
+                            f"Invalid regex pattern '{item['pattern']}': {e}"
+                        )
+
                 if "reference_context" in item:
                     if not isinstance(item["reference_context"], str):
-                        raise ValueError("Contextual prior reference_context must be a string.")
+                        raise ValueError(
+                            "Contextual prior reference_context must be a string."
+                        )
                     parsed_item["reference_context"] = item["reference_context"]
-                
+
                 if "embedding" in item:
                     if not isinstance(item["embedding"], (list, tuple, np.ndarray)):
-                        raise ValueError("Contextual prior embedding must be a list/tuple/numpy array of floats.")
-                    parsed_item["embedding"] = np.array(item["embedding"], dtype=np.float32)
-                
+                        raise ValueError(
+                            "Contextual prior embedding must be a list/tuple/numpy array of floats."
+                        )
+                    parsed_item["embedding"] = np.array(
+                        item["embedding"], dtype=np.float32
+                    )
+
                 if "similarity_threshold" in item:
-                    parsed_item["similarity_threshold"] = float(item["similarity_threshold"])
-                
-                if "pattern" not in parsed_item and "reference_context" not in parsed_item and "embedding" not in parsed_item:
-                    raise ValueError("Each contextual prior must specify at least one of 'pattern', 'reference_context', or 'embedding'.")
-                
+                    parsed_item["similarity_threshold"] = float(
+                        item["similarity_threshold"]
+                    )
+
+                if (
+                    "pattern" not in parsed_item
+                    and "reference_context" not in parsed_item
+                    and "embedding" not in parsed_item
+                ):
+                    raise ValueError(
+                        "Each contextual prior must specify at least one of 'pattern', 'reference_context', or 'embedding'."
+                    )
+
                 self.contextual_priors.append(parsed_item)
 
         self._custom_vector_store_active = vector_store is not None
@@ -374,8 +407,13 @@ class BayesianRouter:
         # 2. Metadata string
         if self.candidate_metadata and candidate_name in self.candidate_metadata:
             if self.embedder is None:
-                raise ValueError("ContextEmbedder is required to embed candidate metadata.")
-            emb = np.array(self.embedder.embed_query(self.candidate_metadata[candidate_name]), dtype=np.float32)
+                raise ValueError(
+                    "ContextEmbedder is required to embed candidate metadata."
+                )
+            emb = np.array(
+                self.embedder.embed_query(self.candidate_metadata[candidate_name]),
+                dtype=np.float32,
+            )
             self._candidate_embedding_cache[candidate_name] = emb
             return emb
 
@@ -461,7 +499,9 @@ class BayesianRouter:
                                     self.embedder.embed_query(ref_ctx), dtype=np.float32
                                 )
                             except Exception as e:
-                                logger.warning(f"Failed to generate embedding for reference context '{ref_ctx}': {e}")
+                                logger.warning(
+                                    f"Failed to generate embedding for reference context '{ref_ctx}': {e}"
+                                )
                                 prior_item["_embedding"] = None
                         ref_vector = prior_item["_embedding"]
 
@@ -469,18 +509,25 @@ class BayesianRouter:
                         if query_vector is None:
                             try:
                                 query_vector = np.array(
-                                    self.embedder.embed_query(context_text), dtype=np.float32
+                                    self.embedder.embed_query(context_text),
+                                    dtype=np.float32,
                                 )
                             except Exception as e:
-                                logger.warning(f"Failed to generate embedding for query context '{context_text}': {e}")
+                                logger.warning(
+                                    f"Failed to generate embedding for query context '{context_text}': {e}"
+                                )
                                 query_vector = np.array([], dtype=np.float32)
 
                         if len(query_vector) > 0 and len(ref_vector) > 0:
                             q_norm = np.linalg.norm(query_vector)
                             r_norm = np.linalg.norm(ref_vector)
                             if q_norm > 0.0 and r_norm > 0.0:
-                                similarity = float(np.dot(query_vector, ref_vector) / (q_norm * r_norm))
-                                threshold = prior_item.get("similarity_threshold", self.similarity_threshold)
+                                similarity = float(
+                                    np.dot(query_vector, ref_vector) / (q_norm * r_norm)
+                                )
+                                threshold = prior_item.get(
+                                    "similarity_threshold", self.similarity_threshold
+                                )
                                 if similarity >= threshold:
                                     if candidate_name in prior_item["priors"]:
                                         return prior_item["priors"][candidate_name]
@@ -497,11 +544,13 @@ class BayesianRouter:
         }
         json_bytes = json.dumps(payload).encode("utf-8")
         payload_b64 = base64.urlsafe_b64encode(json_bytes).decode("utf-8")
-        
+
         # Compute HMAC signature over the payload
-        signature = hmac.new(self.secret_key, payload_b64.encode("utf-8"), hashlib.sha256).digest()
+        signature = hmac.new(
+            self.secret_key, payload_b64.encode("utf-8"), hashlib.sha256
+        ).digest()
         signature_b64 = base64.urlsafe_b64encode(signature).decode("utf-8")
-        
+
         return f"{payload_b64}.{signature_b64}"
 
     def _decode_trace_id(self, trace_id: str) -> Tuple[str, str]:
@@ -509,16 +558,20 @@ class BayesianRouter:
         try:
             if "." not in trace_id:
                 raise ValueError("Missing signature in trace ID")
-            
+
             payload_b64, signature_b64 = trace_id.rsplit(".", 1)
-            
+
             # Verify signature
-            expected_sig = hmac.new(self.secret_key, payload_b64.encode("utf-8"), hashlib.sha256).digest()
+            expected_sig = hmac.new(
+                self.secret_key, payload_b64.encode("utf-8"), hashlib.sha256
+            ).digest()
             expected_sig_b64 = base64.urlsafe_b64encode(expected_sig).decode("utf-8")
-            
-            if not hmac.compare_digest(signature_b64.encode("utf-8"), expected_sig_b64.encode("utf-8")):
+
+            if not hmac.compare_digest(
+                signature_b64.encode("utf-8"), expected_sig_b64.encode("utf-8")
+            ):
                 raise ValueError("Invalid trace ID signature")
-                
+
             json_bytes = base64.urlsafe_b64decode(payload_b64.encode("utf-8"))
             payload = json.loads(json_bytes.decode("utf-8"))
             return payload["ctx"], payload["candidate"]
@@ -571,14 +624,22 @@ class BayesianRouter:
                 highest_sample = -1.0
 
                 for candidate_name in candidates:
-                    alpha, beta = self.storage.get_candidate_params(context_key, candidate_name)
+                    alpha, beta = self.storage.get_candidate_params(
+                        context_key, candidate_name
+                    )
 
                     # Seed priors on cold start (candidate never observed in this context)
-                    if not self.storage.has_candidate_params(context_key, candidate_name):
-                        prior_alpha, prior_beta = self.get_prior(context_text, candidate_name)
+                    if not self.storage.has_candidate_params(
+                        context_key, candidate_name
+                    ):
+                        prior_alpha, prior_beta = self.get_prior(
+                            context_text, candidate_name
+                        )
                         if prior_alpha != 1.0 or prior_beta != 1.0:
                             alpha, beta = prior_alpha, prior_beta
-                            self.storage.update_candidate_params(context_key, candidate_name, alpha, beta)
+                            self.storage.update_candidate_params(
+                                context_key, candidate_name, alpha, beta
+                            )
 
                     # Sample belief matching beta-binomial posterior
                     sampled_score = np.random.beta(alpha, beta)
@@ -597,18 +658,28 @@ class BayesianRouter:
             elif self.hybrid:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
-                x_c = np.array(self.embedder.embed_query(context_text), dtype=np.float32)
-                context_key = self._resolve_context_key(context_text, precomputed_vector=x_c)
+                x_c = np.array(
+                    self.embedder.embed_query(context_text), dtype=np.float32
+                )
+                context_key = self._resolve_context_key(
+                    context_text, precomputed_vector=x_c
+                )
 
                 if not candidates:
                     raise ValueError("Candidate candidates list cannot be empty")
-                
+
                 t_first = self._get_candidate_embedding(candidates[0])
                 d_aug = len(x_c) + len(t_first) + 1
-                
-                precision, reward_vector = self.storage.get_linear_params("__shared_hybrid__")
+
+                precision, reward_vector = self.storage.get_linear_params(
+                    "__shared_hybrid__"
+                )
                 if precision is None or reward_vector is None:
-                    precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    precision = (
+                        self.lambda_val * np.ones(d_aug, dtype=np.float32)
+                        if self.diagonal_covariance
+                        else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    )
                     reward_vector = np.zeros(d_aug, dtype=np.float32)
                     reward_vector[-1] = self.lambda_val * 0.5
 
@@ -617,10 +688,17 @@ class BayesianRouter:
                 else:
                     theta_hat = np.linalg.solve(precision, reward_vector)
 
-                theta_sample = _sample_theta(
-                    theta_hat, precision, self.exploration_weight,
-                    self.diagonal_covariance, d_aug,
-                ) if self.mode == "lints" else None
+                theta_sample = (
+                    _sample_theta(
+                        theta_hat,
+                        precision,
+                        self.exploration_weight,
+                        self.diagonal_covariance,
+                        d_aug,
+                    )
+                    if self.mode == "lints"
+                    else None
+                )
 
                 best_candidate = None
                 highest_score = -float("inf")
@@ -630,9 +708,13 @@ class BayesianRouter:
                     x_augmented = np.concatenate([x_c, t_a, [1.0]])
 
                     score = _linear_score(
-                        x_augmented, theta_hat, precision,
-                        self.mode, self.exploration_weight,
-                        self.diagonal_covariance, theta_sample,
+                        x_augmented,
+                        theta_hat,
+                        precision,
+                        self.mode,
+                        self.exploration_weight,
+                        self.diagonal_covariance,
+                        theta_sample,
                     )
 
                     if score > highest_score:
@@ -651,20 +733,30 @@ class BayesianRouter:
                     raise ValueError("embedder is required for linear bandit mode")
                 x = np.array(self.embedder.embed_query(context_text), dtype=np.float32)
                 d = len(x)
-                context_key = self._resolve_context_key(context_text, precomputed_vector=x)
+                context_key = self._resolve_context_key(
+                    context_text, precomputed_vector=x
+                )
                 x_augmented = np.append(x, 1.0)
                 d_aug = d + 1
-                
+
                 best_candidate = None
                 highest_score = -float("inf")
-                
+
                 for candidate_name in candidates:
-                    prior_alpha, prior_beta = self.get_prior(context_text, candidate_name)
+                    prior_alpha, prior_beta = self.get_prior(
+                        context_text, candidate_name
+                    )
                     prior_p = prior_alpha / (prior_alpha + prior_beta)
-                    
-                    precision, reward_vector = self.storage.get_linear_params(candidate_name)
+
+                    precision, reward_vector = self.storage.get_linear_params(
+                        candidate_name
+                    )
                     if precision is None or reward_vector is None:
-                        precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                        precision = (
+                            self.lambda_val * np.ones(d_aug, dtype=np.float32)
+                            if self.diagonal_covariance
+                            else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                        )
                         reward_vector = np.zeros(d_aug, dtype=np.float32)
                         reward_vector[-1] = self.lambda_val * prior_p
 
@@ -673,14 +765,25 @@ class BayesianRouter:
                     else:
                         theta_hat = np.linalg.solve(precision, reward_vector)
 
-                    theta_sample = _sample_theta(
-                        theta_hat, precision, self.exploration_weight,
-                        self.diagonal_covariance, d_aug,
-                    ) if self.mode == "lints" else None
+                    theta_sample = (
+                        _sample_theta(
+                            theta_hat,
+                            precision,
+                            self.exploration_weight,
+                            self.diagonal_covariance,
+                            d_aug,
+                        )
+                        if self.mode == "lints"
+                        else None
+                    )
                     score = _linear_score(
-                        x_augmented, theta_hat, precision,
-                        self.mode, self.exploration_weight,
-                        self.diagonal_covariance, theta_sample,
+                        x_augmented,
+                        theta_hat,
+                        precision,
+                        self.mode,
+                        self.exploration_weight,
+                        self.diagonal_covariance,
+                        theta_sample,
                     )
 
                     if score > highest_score:
@@ -717,7 +820,9 @@ class BayesianRouter:
                 fallback_choice = candidates[0]
 
             fallback_trace_id = self._generate_trace_id("fallback_ctx", fallback_choice)
-            self.storage.log_selection(fallback_trace_id, "fallback_ctx", fallback_choice)
+            self.storage.log_selection(
+                fallback_trace_id, "fallback_ctx", fallback_choice
+            )
             return fallback_choice, fallback_trace_id
 
     def feedback(
@@ -775,7 +880,9 @@ class BayesianRouter:
             elif self.hybrid:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
-                x_c = np.array(self.embedder.embed_query(context_text), dtype=np.float32)
+                x_c = np.array(
+                    self.embedder.embed_query(context_text), dtype=np.float32
+                )
                 t_a = self._get_candidate_embedding(candidate_name)
                 x_augmented = np.concatenate([x_c, t_a, [1.0]])
 
@@ -792,21 +899,25 @@ class BayesianRouter:
                     diagonal=self.diagonal_covariance,
                 )
 
-                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
+                return _linear_posterior(
+                    x_augmented, precision, reward_vector, self.diagonal_covariance
+                )
 
             else:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
                 x = np.array(self.embedder.embed_query(context_text), dtype=np.float32)
-                context_key = self._resolve_context_key(context_text, precomputed_vector=x)
+                context_key = self._resolve_context_key(
+                    context_text, precomputed_vector=x
+                )
                 x_augmented = np.append(x, 1.0)
-                
+
                 if candidate_name in self.priors:
                     alpha, beta = self.priors[candidate_name]
                     prior_p = alpha / (alpha + beta)
                 else:
                     prior_p = 0.5
-                
+
                 precision, reward_vector = self.storage.decay_and_update_linear(
                     candidate_name=candidate_name,
                     decay_factor=self.decay_factor,
@@ -816,8 +927,10 @@ class BayesianRouter:
                     prior_p=prior_p,
                     diagonal=self.diagonal_covariance,
                 )
-                
-                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
+
+                return _linear_posterior(
+                    x_augmented, precision, reward_vector, self.diagonal_covariance
+                )
 
         except Exception as e:
             if strict:
@@ -891,15 +1004,15 @@ class BayesianRouter:
                     x = np.zeros(d, dtype=np.float32)
                 else:
                     x = np.array(x_seq, dtype=np.float32)
-                
+
                 x_augmented = np.concatenate([x, t_a, [1.0]])
-                
+
                 if candidate_name in self.priors:
                     alpha, beta = self.priors[candidate_name]
                     prior_p = alpha / (alpha + beta)
                 else:
                     prior_p = 0.5
-                
+
                 precision, reward_vector = self.storage.decay_and_update_linear(
                     candidate_name="__shared_hybrid__",
                     decay_factor=self.decay_factor,
@@ -909,8 +1022,10 @@ class BayesianRouter:
                     prior_p=prior_p,
                     diagonal=self.diagonal_covariance,
                 )
-                
-                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
+
+                return _linear_posterior(
+                    x_augmented, precision, reward_vector, self.diagonal_covariance
+                )
 
             else:
                 x_seq = self._context_store.get_context_vector(context_key)
@@ -926,15 +1041,15 @@ class BayesianRouter:
                     x = np.zeros(d, dtype=np.float32)
                 else:
                     x = np.array(x_seq, dtype=np.float32)
-                
+
                 x_augmented = np.append(x, 1.0)
-                
+
                 if candidate_name in self.priors:
                     alpha, beta = self.priors[candidate_name]
                     prior_p = alpha / (alpha + beta)
                 else:
                     prior_p = 0.5
-                
+
                 precision, reward_vector = self.storage.decay_and_update_linear(
                     candidate_name=candidate_name,
                     decay_factor=self.decay_factor,
@@ -944,8 +1059,10 @@ class BayesianRouter:
                     prior_p=prior_p,
                     diagonal=self.diagonal_covariance,
                 )
-                
-                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
+
+                return _linear_posterior(
+                    x_augmented, precision, reward_vector, self.diagonal_covariance
+                )
 
         except Exception as e:
             if strict:
@@ -987,14 +1104,18 @@ class BayesianRouter:
         try:
             context_key = self._resolve_context_key(context_text)
             if self.mode == "clustering":
-                alpha, beta = self.storage.get_candidate_params(context_key, candidate_name)
+                alpha, beta = self.storage.get_candidate_params(
+                    context_key, candidate_name
+                )
                 if not self.storage.has_candidate_params(context_key, candidate_name):
                     alpha, beta = self.get_prior(context_text, candidate_name)
                 return alpha, beta
             elif self.hybrid:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
-                x_c = np.array(self.embedder.embed_query(context_text), dtype=np.float32)
+                x_c = np.array(
+                    self.embedder.embed_query(context_text), dtype=np.float32
+                )
                 t_a = self._get_candidate_embedding(candidate_name)
                 x_augmented = np.concatenate([x_c, t_a, [1.0]])
                 d_aug = len(x_augmented)
@@ -1002,13 +1123,21 @@ class BayesianRouter:
                 prior_alpha, prior_beta = self.get_prior(context_text, candidate_name)
                 prior_p = prior_alpha / (prior_alpha + prior_beta)
 
-                precision, reward_vector = self.storage.get_linear_params("__shared_hybrid__")
+                precision, reward_vector = self.storage.get_linear_params(
+                    "__shared_hybrid__"
+                )
                 if precision is None or reward_vector is None:
-                    precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    precision = (
+                        self.lambda_val * np.ones(d_aug, dtype=np.float32)
+                        if self.diagonal_covariance
+                        else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    )
                     reward_vector = np.zeros(d_aug, dtype=np.float32)
                     reward_vector[-1] = self.lambda_val * prior_p
 
-                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
+                return _linear_posterior(
+                    x_augmented, precision, reward_vector, self.diagonal_covariance
+                )
 
             else:
                 if self.embedder is None:
@@ -1016,17 +1145,25 @@ class BayesianRouter:
                 x = np.array(self.embedder.embed_query(context_text), dtype=np.float32)
                 x_augmented = np.append(x, 1.0)
                 d_aug = len(x_augmented)
-                
+
                 prior_alpha, prior_beta = self.get_prior(context_text, candidate_name)
                 prior_p = prior_alpha / (prior_alpha + prior_beta)
-                
-                precision, reward_vector = self.storage.get_linear_params(candidate_name)
+
+                precision, reward_vector = self.storage.get_linear_params(
+                    candidate_name
+                )
                 if precision is None or reward_vector is None:
-                    precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    precision = (
+                        self.lambda_val * np.ones(d_aug, dtype=np.float32)
+                        if self.diagonal_covariance
+                        else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    )
                     reward_vector = np.zeros(d_aug, dtype=np.float32)
                     reward_vector[-1] = self.lambda_val * prior_p
-                
-                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
+
+                return _linear_posterior(
+                    x_augmented, precision, reward_vector, self.diagonal_covariance
+                )
         except Exception as e:
             logger.exception("BayesianRouter get_candidate_beliefs failed.")
             if self.telemetry_hook:
@@ -1111,10 +1248,14 @@ class BayesianRouter:
         try:
             if self.mode == "clustering":
                 context_keys = self._resolve_context_keys(contexts)
-                
-                param_keys = [(ctx_key, candidate_name) for ctx_key in context_keys for candidate_name in candidates]
+
+                param_keys = [
+                    (ctx_key, candidate_name)
+                    for ctx_key in context_keys
+                    for candidate_name in candidates
+                ]
                 param_dict = self.storage.get_candidate_params_batch(param_keys)
-                
+
                 priors_to_update = {}
                 results = []
                 for idx, context_key in enumerate(context_keys):
@@ -1123,13 +1264,22 @@ class BayesianRouter:
                     highest_sample = -1.0
 
                     for candidate_name in candidates:
-                        alpha, beta = param_dict.get((context_key, candidate_name), (1.0, 1.0))
+                        alpha, beta = param_dict.get(
+                            (context_key, candidate_name), (1.0, 1.0)
+                        )
 
-                        if not self.storage.has_candidate_params(context_key, candidate_name):
-                            prior_alpha, prior_beta = self.get_prior(context_text, candidate_name)
+                        if not self.storage.has_candidate_params(
+                            context_key, candidate_name
+                        ):
+                            prior_alpha, prior_beta = self.get_prior(
+                                context_text, candidate_name
+                            )
                             if prior_alpha != 1.0 or prior_beta != 1.0:
                                 alpha, beta = prior_alpha, prior_beta
-                                priors_to_update[(context_key, candidate_name)] = (alpha, beta)
+                                priors_to_update[(context_key, candidate_name)] = (
+                                    alpha,
+                                    beta,
+                                )
 
                         sampled_score = np.random.beta(alpha, beta)
 
@@ -1148,28 +1298,39 @@ class BayesianRouter:
                     if hasattr(self.storage, "update_candidate_params_batch"):
                         self.storage.update_candidate_params_batch(priors_to_update)
                     else:
-                        for (ctx_key, candidate_name), (alpha, beta) in priors_to_update.items():
-                            self.storage.update_candidate_params(ctx_key, candidate_name, alpha, beta)
+                        for (ctx_key, candidate_name), (
+                            alpha,
+                            beta,
+                        ) in priors_to_update.items():
+                            self.storage.update_candidate_params(
+                                ctx_key, candidate_name, alpha, beta
+                            )
 
                 return results
 
             elif self.hybrid:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
-                
+
                 if hasattr(self.embedder, "embed_queries"):
                     vectors = self.embedder.embed_queries(contexts)
                 else:
                     vectors = [self.embedder.embed_query(ctx) for ctx in contexts]
 
                 context_keys = self._resolve_context_keys(contexts)
-                
+
                 t_first = self._get_candidate_embedding(candidates[0])
                 d_aug = len(vectors[0]) + len(t_first) + 1
-                
-                precision, reward_vector = self.storage.get_linear_params("__shared_hybrid__")
+
+                precision, reward_vector = self.storage.get_linear_params(
+                    "__shared_hybrid__"
+                )
                 if precision is None or reward_vector is None:
-                    precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    precision = (
+                        self.lambda_val * np.ones(d_aug, dtype=np.float32)
+                        if self.diagonal_covariance
+                        else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    )
                     reward_vector = np.zeros(d_aug, dtype=np.float32)
                     reward_vector[-1] = self.lambda_val * 0.5
 
@@ -1182,11 +1343,18 @@ class BayesianRouter:
                 for idx, x_seq in enumerate(vectors):
                     x_c = np.array(x_seq, dtype=np.float32)
                     context_key = context_keys[idx]
-                    
-                    theta_sample = _sample_theta(
-                        theta_hat, precision, self.exploration_weight,
-                        self.diagonal_covariance, d_aug,
-                    ) if self.mode == "lints" else None
+
+                    theta_sample = (
+                        _sample_theta(
+                            theta_hat,
+                            precision,
+                            self.exploration_weight,
+                            self.diagonal_covariance,
+                            d_aug,
+                        )
+                        if self.mode == "lints"
+                        else None
+                    )
 
                     best_candidate = None
                     highest_score = -float("inf")
@@ -1196,9 +1364,13 @@ class BayesianRouter:
                         x_augmented = np.concatenate([x_c, t_a, [1.0]])
 
                         score = _linear_score(
-                            x_augmented, theta_hat, precision,
-                            self.mode, self.exploration_weight,
-                            self.diagonal_covariance, theta_sample,
+                            x_augmented,
+                            theta_hat,
+                            precision,
+                            self.mode,
+                            self.exploration_weight,
+                            self.diagonal_covariance,
+                            theta_sample,
                         )
 
                         if score > highest_score:
@@ -1217,18 +1389,20 @@ class BayesianRouter:
             else:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
-                
+
                 if hasattr(self.embedder, "embed_queries"):
                     vectors = self.embedder.embed_queries(contexts)
                 else:
                     vectors = [self.embedder.embed_query(ctx) for ctx in contexts]
-                
+
                 tool_params = {}
                 if hasattr(self.storage, "get_linear_params_batch"):
                     tool_params = self.storage.get_linear_params_batch(candidates)
                 else:
                     for candidate_name in candidates:
-                        tool_params[candidate_name] = self.storage.get_linear_params(candidate_name)
+                        tool_params[candidate_name] = self.storage.get_linear_params(
+                            candidate_name
+                        )
 
                 context_keys = self._resolve_context_keys(contexts)
                 results = []
@@ -1239,17 +1413,25 @@ class BayesianRouter:
                     d_aug = d + 1
                     context_key = context_keys[idx]
                     context_text = contexts[idx]
-                    
+
                     best_candidate = None
                     highest_score = -float("inf")
-                    
+
                     for candidate_name in candidates:
-                        prior_alpha, prior_beta = self.get_prior(context_text, candidate_name)
+                        prior_alpha, prior_beta = self.get_prior(
+                            context_text, candidate_name
+                        )
                         prior_p = prior_alpha / (prior_alpha + prior_beta)
-                        
-                        precision, reward_vector = tool_params.get(candidate_name, (None, None))
+
+                        precision, reward_vector = tool_params.get(
+                            candidate_name, (None, None)
+                        )
                         if precision is None or reward_vector is None:
-                            precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                            precision = (
+                                self.lambda_val * np.ones(d_aug, dtype=np.float32)
+                                if self.diagonal_covariance
+                                else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                            )
                             reward_vector = np.zeros(d_aug, dtype=np.float32)
                             reward_vector[-1] = self.lambda_val * prior_p
 
@@ -1258,14 +1440,25 @@ class BayesianRouter:
                         else:
                             theta_hat = np.linalg.solve(precision, reward_vector)
 
-                        theta_sample = _sample_theta(
-                            theta_hat, precision, self.exploration_weight,
-                            self.diagonal_covariance, d_aug,
-                        ) if self.mode == "lints" else None
+                        theta_sample = (
+                            _sample_theta(
+                                theta_hat,
+                                precision,
+                                self.exploration_weight,
+                                self.diagonal_covariance,
+                                d_aug,
+                            )
+                            if self.mode == "lints"
+                            else None
+                        )
                         score = _linear_score(
-                            x_augmented, theta_hat, precision,
-                            self.mode, self.exploration_weight,
-                            self.diagonal_covariance, theta_sample,
+                            x_augmented,
+                            theta_hat,
+                            precision,
+                            self.mode,
+                            self.exploration_weight,
+                            self.diagonal_covariance,
+                            theta_sample,
                         )
 
                         if score > highest_score:
@@ -1282,7 +1475,9 @@ class BayesianRouter:
                 return results
 
         except Exception as e:
-            logger.exception("BayesianRouter batch routing failed. Triggering fail-safe fallback.")
+            logger.exception(
+                "BayesianRouter batch routing failed. Triggering fail-safe fallback."
+            )
             if self.telemetry_hook:
                 try:
                     self.telemetry_hook(
@@ -1296,10 +1491,16 @@ class BayesianRouter:
                 except Exception as hook_err:
                     logger.error(f"Telemetry hook failed: {hook_err}")
 
-            fallback_choice = self.fallback_candidate if (self.fallback_candidate and self.fallback_candidate in candidates) else candidates[0]
+            fallback_choice = (
+                self.fallback_candidate
+                if (self.fallback_candidate and self.fallback_candidate in candidates)
+                else candidates[0]
+            )
             fallback_trace_id = self._generate_trace_id("fallback_ctx", fallback_choice)
             for _ in contexts:
-                self.storage.log_selection(fallback_trace_id, "fallback_ctx", fallback_choice)
+                self.storage.log_selection(
+                    fallback_trace_id, "fallback_ctx", fallback_choice
+                )
             return [(fallback_choice, fallback_trace_id)] * len(contexts)
 
     def feedback_batch(self, feedbacks: List[Dict[str, Any]]) -> None:
@@ -1310,43 +1511,57 @@ class BayesianRouter:
             contexts_to_embed = []
             contexts_to_embed_indices = []
             prepared_feedbacks = []
-            
+
             for fb in feedbacks:
                 success = fb.get("success")
                 reward = fb.get("reward")
-                
+
                 if success is None and reward is None:
-                    raise ValueError("Either 'success' or 'reward' must be provided in feedback.")
+                    raise ValueError(
+                        "Either 'success' or 'reward' must be provided in feedback."
+                    )
                 if success is not None and reward is not None:
                     expected_reward = 1.0 if success else 0.0
                     if reward != expected_reward:
                         raise ValueError(
                             f"Conflicting feedback: success={success} and reward={reward}."
                         )
-                
-                reward_val = float(reward) if reward is not None else (1.0 if success else 0.0)
-                
+
+                reward_val = (
+                    float(reward) if reward is not None else (1.0 if success else 0.0)
+                )
+
                 trace_id = fb.get("trace_id")
                 if trace_id is not None:
                     context_key, candidate_name = self._decode_trace_id(trace_id)
-                    prepared_feedbacks.append({
-                        "type": "trace",
-                        "context_key": context_key,
-                        "candidate_name": candidate_name,
-                        "reward_val": reward_val,
-                    })
+                    prepared_feedbacks.append(
+                        {
+                            "type": "trace",
+                            "context_key": context_key,
+                            "candidate_name": candidate_name,
+                            "reward_val": reward_val,
+                        }
+                    )
                 else:
-                    context_text = fb.get("context_text") if fb.get("context_text") is not None else fb.get("context_key")
+                    context_text = (
+                        fb.get("context_text")
+                        if fb.get("context_text") is not None
+                        else fb.get("context_key")
+                    )
                     candidate_name = fb.get("candidate_name")
                     if not context_text or not candidate_name:
-                        raise ValueError("Feedback must contain either 'trace_id' or context and candidate identifiers.")
-                    
-                    prepared_feedbacks.append({
-                        "type": "text",
-                        "context_text": context_text,
-                        "candidate_name": candidate_name,
-                        "reward_val": reward_val,
-                    })
+                        raise ValueError(
+                            "Feedback must contain either 'trace_id' or context and candidate identifiers."
+                        )
+
+                    prepared_feedbacks.append(
+                        {
+                            "type": "text",
+                            "context_text": context_text,
+                            "candidate_name": candidate_name,
+                            "reward_val": reward_val,
+                        }
+                    )
                     contexts_to_embed.append(context_text)
                     contexts_to_embed_indices.append(len(prepared_feedbacks) - 1)
 
@@ -1354,19 +1569,28 @@ class BayesianRouter:
                 resolved_keys = self._resolve_context_keys(contexts_to_embed)
                 for idx, key in zip(contexts_to_embed_indices, resolved_keys):
                     prepared_feedbacks[idx]["context_key"] = key
-                    
+
                 if self.mode != "clustering":
                     if hasattr(self.embedder, "embed_queries"):
                         vectors = self.embedder.embed_queries(contexts_to_embed)
                     else:
-                        vectors = [self.embedder.embed_query(t) for t in contexts_to_embed]
+                        vectors = [
+                            self.embedder.embed_query(t) for t in contexts_to_embed
+                        ]
                     for idx, vector in zip(contexts_to_embed_indices, vectors):
                         prepared_feedbacks[idx]["vector"] = vector
 
             if self.mode == "clustering":
                 updates = []
                 for fb in prepared_feedbacks:
-                    updates.append((fb["context_key"], fb["candidate_name"], self.decay_factor, fb["reward_val"]))
+                    updates.append(
+                        (
+                            fb["context_key"],
+                            fb["candidate_name"],
+                            self.decay_factor,
+                            fb["reward_val"],
+                        )
+                    )
                 self.storage.decay_and_update_batch(updates)
             elif self.hybrid:
                 updates = []
@@ -1376,12 +1600,16 @@ class BayesianRouter:
                     t_a = self._get_candidate_embedding(candidate_name)
 
                     if fb["type"] == "trace":
-                        x_seq = self._context_store.get_context_vector(fb["context_key"])
+                        x_seq = self._context_store.get_context_vector(
+                            fb["context_key"]
+                        )
                         if x_seq is None:
                             logger.warning(
                                 f"Context vector not found for key {fb['context_key']}. Using zero vector as fallback."
                             )
-                            precision, _ = self.storage.get_linear_params("__shared_hybrid__")
+                            precision, _ = self.storage.get_linear_params(
+                                "__shared_hybrid__"
+                            )
                             if precision is not None:
                                 d = len(precision) - len(t_a) - 1
                             else:
@@ -1400,7 +1628,17 @@ class BayesianRouter:
                     else:
                         prior_p = 0.5
 
-                    updates.append(("__shared_hybrid__", self.decay_factor, reward_val, x_augmented, self.lambda_val, prior_p, self.diagonal_covariance))
+                    updates.append(
+                        (
+                            "__shared_hybrid__",
+                            self.decay_factor,
+                            reward_val,
+                            x_augmented,
+                            self.lambda_val,
+                            prior_p,
+                            self.diagonal_covariance,
+                        )
+                    )
 
                 self.storage.decay_and_update_linear_batch(updates)
 
@@ -1409,14 +1647,18 @@ class BayesianRouter:
                 for fb in prepared_feedbacks:
                     candidate_name = fb["candidate_name"]
                     reward_val = fb["reward_val"]
-                    
+
                     if fb["type"] == "trace":
-                        x_seq = self._context_store.get_context_vector(fb["context_key"])
+                        x_seq = self._context_store.get_context_vector(
+                            fb["context_key"]
+                        )
                         if x_seq is None:
                             logger.warning(
                                 f"Context vector not found for key {fb['context_key']}. Using zero vector as fallback."
                             )
-                            precision, _ = self.storage.get_linear_params(candidate_name)
+                            precision, _ = self.storage.get_linear_params(
+                                candidate_name
+                            )
                             if precision is not None:
                                 d = len(precision) - 1
                             else:
@@ -1426,34 +1668,49 @@ class BayesianRouter:
                             x = np.array(x_seq, dtype=np.float32)
                     else:
                         x = np.array(fb["vector"], dtype=np.float32)
-                    
+
                     x_augmented = np.append(x, 1.0)
-                    
+
                     if candidate_name in self.priors:
                         alpha, beta = self.priors[candidate_name]
                         prior_p = alpha / (alpha + beta)
                     else:
                         prior_p = 0.5
-                        
-                    updates.append((candidate_name, self.decay_factor, reward_val, x_augmented, self.lambda_val, prior_p, self.diagonal_covariance))
-                    
+
+                    updates.append(
+                        (
+                            candidate_name,
+                            self.decay_factor,
+                            reward_val,
+                            x_augmented,
+                            self.lambda_val,
+                            prior_p,
+                            self.diagonal_covariance,
+                        )
+                    )
+
                 self.storage.decay_and_update_linear_batch(updates)
 
             # Log trace feedback
             for fb in feedbacks:
                 trace_id = fb.get("trace_id")
                 if trace_id is not None:
-                    reward_val = float(fb.get("reward")) if fb.get("reward") is not None else (1.0 if fb.get("success") else 0.0)
+                    reward_val = (
+                        float(fb.get("reward"))
+                        if fb.get("reward") is not None
+                        else (1.0 if fb.get("success") else 0.0)
+                    )
                     self.storage.log_feedback(trace_id, reward_val)
 
         except Exception as e:
             logger.exception("BayesianRouter batch feedback submission failed.")
             if self.telemetry_hook:
                 try:
-                    self.telemetry_hook("feedback_batch_failure", e, {"feedbacks": feedbacks})
+                    self.telemetry_hook(
+                        "feedback_batch_failure", e, {"feedbacks": feedbacks}
+                    )
                 except Exception as hook_err:
                     logger.error(f"Telemetry hook failed: {hook_err}")
-
 
 
 class AsyncBayesianRouter:
@@ -1465,21 +1722,27 @@ class AsyncBayesianRouter:
     def __init__(
         self,
         storage: Optional[AsyncBaseStorage] = None,
-        embedder: Optional[Any] = None,  # Can be ContextEmbedder or AsyncContextEmbedder
+        embedder: Optional[
+            Any
+        ] = None,  # Can be ContextEmbedder or AsyncContextEmbedder
         decay_factor: float = 1.0,
         similarity_threshold: float = 0.8,
         priors: Optional[Dict[str, Tuple[float, float]]] = None,
         contextual_priors: Optional[List[Dict[str, Any]]] = None,
         vector_store: Optional[AsyncVectorStoreProtocol] = None,
         fallback_candidate: Optional[str] = None,
-        telemetry_hook: Optional[Callable[[str, Exception, Dict[str, Any]], Any]] = None,
+        telemetry_hook: Optional[
+            Callable[[str, Exception, Dict[str, Any]], Any]
+        ] = None,
         mode: str = "clustering",
         exploration_weight: float = 1.0,
         lambda_val: float = 1.0,
         diagonal_covariance: bool = False,
         secret_key: Optional[Union[str, bytes]] = None,
         hybrid: bool = False,
-        candidate_embeddings: Optional[Dict[str, Union[Sequence[float], np.ndarray]]] = None,
+        candidate_embeddings: Optional[
+            Dict[str, Union[Sequence[float], np.ndarray]]
+        ] = None,
         candidate_metadata: Optional[Dict[str, str]] = None,
         storage_backend: Optional[str] = None,
         storage_path: Optional[str] = None,
@@ -1494,11 +1757,16 @@ class AsyncBayesianRouter:
             storage_kwargs = storage_kwargs or {}
             if storage_backend == "sqlite":
                 from bayesian_cortex.storage import AsyncSQLiteStorage
-                storage = AsyncSQLiteStorage(db_path=storage_path or "bayesian_cortex.db", **storage_kwargs)
+
+                storage = AsyncSQLiteStorage(
+                    db_path=storage_path or "bayesian_cortex.db", **storage_kwargs
+                )
             elif storage_backend == "redis":
                 from bayesian_cortex.storage import AsyncRedisStorage
+
                 if isinstance(storage_path, str) or storage_path is None:
                     import redis.asyncio as aioredis
+
                     client = aioredis.from_url(storage_path or "redis://localhost:6379")
                 else:
                     client = storage_path
@@ -1512,7 +1780,7 @@ class AsyncBayesianRouter:
         self.embedder = embedder
         self.fallback_candidate = fallback_candidate
         self.telemetry_hook = telemetry_hook
-        
+
         self.mode = mode
         if mode not in ("clustering", "lints", "linucb"):
             raise ValueError("mode must be 'clustering', 'lints', or 'linucb'")
@@ -1525,7 +1793,9 @@ class AsyncBayesianRouter:
         self._candidate_embedding_cache: Dict[str, np.ndarray] = {}
 
         if self.hybrid and self.mode not in ("lints", "linucb"):
-            raise ValueError("Hybrid mode is only supported with linear bandit modes ('lints', 'linucb').")
+            raise ValueError(
+                "Hybrid mode is only supported with linear bandit modes ('lints', 'linucb')."
+            )
 
         # Determine secret key for signing trace IDs
         if secret_key is not None:
@@ -1541,14 +1811,16 @@ class AsyncBayesianRouter:
                 self.secret_key = os.urandom(32)
 
         if self.mode in ("lints", "linucb") and self.embedder is None:
-            raise ValueError("Linear bandit modes ('lints', 'linucb') require a ContextEmbedder/AsyncContextEmbedder.")
+            raise ValueError(
+                "Linear bandit modes ('lints', 'linucb') require a ContextEmbedder/AsyncContextEmbedder."
+            )
 
         if embedder is None:
             logger.warning(
                 "No ContextEmbedder/AsyncContextEmbedder provided to async router. "
                 "Operating in exact-match fallback mode."
             )
-        
+
         if not (0.0 < decay_factor <= 1.0):
             raise ValueError("decay_factor must be in the range (0, 1]")
         self.decay_factor = decay_factor
@@ -1561,39 +1833,61 @@ class AsyncBayesianRouter:
             for item in contextual_priors:
                 parsed_item = {}
                 if "priors" not in item or not isinstance(item["priors"], dict):
-                    raise ValueError("Each contextual prior must contain a 'priors' dictionary.")
-                
+                    raise ValueError(
+                        "Each contextual prior must contain a 'priors' dictionary."
+                    )
+
                 priors_map = {}
                 for t_name, params in item["priors"].items():
                     if not isinstance(params, (list, tuple)) or len(params) != 2:
-                        raise ValueError(f"Prior parameters for candidate '{t_name}' must be a tuple/list of (alpha, beta).")
+                        raise ValueError(
+                            f"Prior parameters for candidate '{t_name}' must be a tuple/list of (alpha, beta)."
+                        )
                     priors_map[t_name] = (float(params[0]), float(params[1]))
                 parsed_item["priors"] = priors_map
 
                 if "pattern" in item:
                     if not isinstance(item["pattern"], str):
-                        raise ValueError("Contextual prior pattern must be a regex string.")
+                        raise ValueError(
+                            "Contextual prior pattern must be a regex string."
+                        )
                     try:
                         parsed_item["pattern"] = re.compile(item["pattern"])
                     except re.error as e:
-                        raise ValueError(f"Invalid regex pattern '{item['pattern']}': {e}")
-                
+                        raise ValueError(
+                            f"Invalid regex pattern '{item['pattern']}': {e}"
+                        )
+
                 if "reference_context" in item:
                     if not isinstance(item["reference_context"], str):
-                        raise ValueError("Contextual prior reference_context must be a string.")
+                        raise ValueError(
+                            "Contextual prior reference_context must be a string."
+                        )
                     parsed_item["reference_context"] = item["reference_context"]
-                
+
                 if "embedding" in item:
                     if not isinstance(item["embedding"], (list, tuple, np.ndarray)):
-                        raise ValueError("Contextual prior embedding must be a list/tuple/numpy array of floats.")
-                    parsed_item["embedding"] = np.array(item["embedding"], dtype=np.float32)
-                
+                        raise ValueError(
+                            "Contextual prior embedding must be a list/tuple/numpy array of floats."
+                        )
+                    parsed_item["embedding"] = np.array(
+                        item["embedding"], dtype=np.float32
+                    )
+
                 if "similarity_threshold" in item:
-                    parsed_item["similarity_threshold"] = float(item["similarity_threshold"])
-                
-                if "pattern" not in parsed_item and "reference_context" not in parsed_item and "embedding" not in parsed_item:
-                    raise ValueError("Each contextual prior must specify at least one of 'pattern', 'reference_context', or 'embedding'.")
-                
+                    parsed_item["similarity_threshold"] = float(
+                        item["similarity_threshold"]
+                    )
+
+                if (
+                    "pattern" not in parsed_item
+                    and "reference_context" not in parsed_item
+                    and "embedding" not in parsed_item
+                ):
+                    raise ValueError(
+                        "Each contextual prior must specify at least one of 'pattern', 'reference_context', or 'embedding'."
+                    )
+
                 self.contextual_priors.append(parsed_item)
 
         self._custom_vector_store_active = vector_store is not None
@@ -1699,11 +1993,17 @@ class AsyncBayesianRouter:
         # 2. Metadata string
         if self.candidate_metadata and candidate_name in self.candidate_metadata:
             if self.embedder is None:
-                raise ValueError("ContextEmbedder/AsyncContextEmbedder is required to embed candidate metadata.")
+                raise ValueError(
+                    "ContextEmbedder/AsyncContextEmbedder is required to embed candidate metadata."
+                )
             if hasattr(self.embedder, "aembed_query"):
-                raw_emb = await self.embedder.aembed_query(self.candidate_metadata[candidate_name])
+                raw_emb = await self.embedder.aembed_query(
+                    self.candidate_metadata[candidate_name]
+                )
             else:
-                raw_emb = self.embedder.embed_query(self.candidate_metadata[candidate_name])
+                raw_emb = self.embedder.embed_query(
+                    self.candidate_metadata[candidate_name]
+                )
             emb = np.array(raw_emb, dtype=np.float32)
             self._candidate_embedding_cache[candidate_name] = emb
             return emb
@@ -1763,7 +2063,9 @@ class AsyncBayesianRouter:
             await self.storage.save_vector(new_key, vector)
         return new_key
 
-    async def get_prior(self, context_text: str, candidate_name: str) -> Tuple[float, float]:
+    async def get_prior(
+        self, context_text: str, candidate_name: str
+    ) -> Tuple[float, float]:
         """
         Retrieve context-specific prior parameters if a matching contextual prior rule exists.
         Falls back to global priors or default (1.0, 1.0).
@@ -1792,9 +2094,13 @@ class AsyncBayesianRouter:
                                     vector = await self.embedder.aembed_query(ref_ctx)
                                 else:
                                     vector = self.embedder.embed_query(ref_ctx)
-                                prior_item["_embedding"] = np.array(vector, dtype=np.float32)
+                                prior_item["_embedding"] = np.array(
+                                    vector, dtype=np.float32
+                                )
                             except Exception as e:
-                                logger.warning(f"Failed to generate embedding for reference context '{ref_ctx}': {e}")
+                                logger.warning(
+                                    f"Failed to generate embedding for reference context '{ref_ctx}': {e}"
+                                )
                                 prior_item["_embedding"] = None
                         ref_vector = prior_item["_embedding"]
 
@@ -1802,20 +2108,28 @@ class AsyncBayesianRouter:
                         if query_vector is None:
                             try:
                                 if hasattr(self.embedder, "aembed_query"):
-                                    vector = await self.embedder.aembed_query(context_text)
+                                    vector = await self.embedder.aembed_query(
+                                        context_text
+                                    )
                                 else:
                                     vector = self.embedder.embed_query(context_text)
                                 query_vector = np.array(vector, dtype=np.float32)
                             except Exception as e:
-                                logger.warning(f"Failed to generate embedding for query context '{context_text}': {e}")
+                                logger.warning(
+                                    f"Failed to generate embedding for query context '{context_text}': {e}"
+                                )
                                 query_vector = np.array([], dtype=np.float32)
 
                         if len(query_vector) > 0 and len(ref_vector) > 0:
                             q_norm = np.linalg.norm(query_vector)
                             r_norm = np.linalg.norm(ref_vector)
                             if q_norm > 0.0 and r_norm > 0.0:
-                                similarity = float(np.dot(query_vector, ref_vector) / (q_norm * r_norm))
-                                threshold = prior_item.get("similarity_threshold", self.similarity_threshold)
+                                similarity = float(
+                                    np.dot(query_vector, ref_vector) / (q_norm * r_norm)
+                                )
+                                threshold = prior_item.get(
+                                    "similarity_threshold", self.similarity_threshold
+                                )
                                 if similarity >= threshold:
                                     if candidate_name in prior_item["priors"]:
                                         return prior_item["priors"][candidate_name]
@@ -1832,11 +2146,13 @@ class AsyncBayesianRouter:
         }
         json_bytes = json.dumps(payload).encode("utf-8")
         payload_b64 = base64.urlsafe_b64encode(json_bytes).decode("utf-8")
-        
+
         # Compute HMAC signature over the payload
-        signature = hmac.new(self.secret_key, payload_b64.encode("utf-8"), hashlib.sha256).digest()
+        signature = hmac.new(
+            self.secret_key, payload_b64.encode("utf-8"), hashlib.sha256
+        ).digest()
         signature_b64 = base64.urlsafe_b64encode(signature).decode("utf-8")
-        
+
         return f"{payload_b64}.{signature_b64}"
 
     def _decode_trace_id(self, trace_id: str) -> Tuple[str, str]:
@@ -1844,23 +2160,29 @@ class AsyncBayesianRouter:
         try:
             if "." not in trace_id:
                 raise ValueError("Missing signature in trace ID")
-            
+
             payload_b64, signature_b64 = trace_id.rsplit(".", 1)
-            
+
             # Verify signature
-            expected_sig = hmac.new(self.secret_key, payload_b64.encode("utf-8"), hashlib.sha256).digest()
+            expected_sig = hmac.new(
+                self.secret_key, payload_b64.encode("utf-8"), hashlib.sha256
+            ).digest()
             expected_sig_b64 = base64.urlsafe_b64encode(expected_sig).decode("utf-8")
-            
-            if not hmac.compare_digest(signature_b64.encode("utf-8"), expected_sig_b64.encode("utf-8")):
+
+            if not hmac.compare_digest(
+                signature_b64.encode("utf-8"), expected_sig_b64.encode("utf-8")
+            ):
                 raise ValueError("Invalid trace ID signature")
-                
+
             json_bytes = base64.urlsafe_b64decode(payload_b64.encode("utf-8"))
             payload = json.loads(json_bytes.decode("utf-8"))
             return payload["ctx"], payload["candidate"]
         except Exception as e:
             raise ValueError(f"Invalid or corrupted trace ID: {trace_id}") from e
 
-    async def _call_telemetry(self, event: str, exc: Exception, ctx: Dict[str, Any]) -> None:
+    async def _call_telemetry(
+        self, event: str, exc: Exception, ctx: Dict[str, Any]
+    ) -> None:
         if not self.telemetry_hook:
             return
         try:
@@ -1911,14 +2233,22 @@ class AsyncBayesianRouter:
                 highest_sample = -1.0
 
                 for candidate_name in candidates:
-                    alpha, beta = await self.storage.get_candidate_params(context_key, candidate_name)
+                    alpha, beta = await self.storage.get_candidate_params(
+                        context_key, candidate_name
+                    )
 
                     # Seed priors on cold start (candidate never observed in this context)
-                    if not await self.storage.ahas_candidate_params(context_key, candidate_name):
-                        prior_alpha, prior_beta = await self.get_prior(context_text, candidate_name)
+                    if not await self.storage.ahas_candidate_params(
+                        context_key, candidate_name
+                    ):
+                        prior_alpha, prior_beta = await self.get_prior(
+                            context_text, candidate_name
+                        )
                         if prior_alpha != 1.0 or prior_beta != 1.0:
                             alpha, beta = prior_alpha, prior_beta
-                            await self.storage.update_candidate_params(context_key, candidate_name, alpha, beta)
+                            await self.storage.update_candidate_params(
+                                context_key, candidate_name, alpha, beta
+                            )
 
                     sampled_score = np.random.beta(alpha, beta)
 
@@ -1936,24 +2266,32 @@ class AsyncBayesianRouter:
             elif self.hybrid:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
-                
+
                 if hasattr(self.embedder, "aembed_query"):
                     x_seq = await self.embedder.aembed_query(context_text)
                 else:
                     x_seq = self.embedder.embed_query(context_text)
-                
+
                 x_c = np.array(x_seq, dtype=np.float32)
-                context_key = await self._resolve_context_key(context_text, precomputed_vector=x_c)
+                context_key = await self._resolve_context_key(
+                    context_text, precomputed_vector=x_c
+                )
 
                 if not candidates:
                     raise ValueError("Candidate candidates list cannot be empty")
-                
+
                 t_first = await self._get_candidate_embedding(candidates[0])
                 d_aug = len(x_c) + len(t_first) + 1
-                
-                precision, reward_vector = await self.storage.aget_linear_params("__shared_hybrid__")
+
+                precision, reward_vector = await self.storage.aget_linear_params(
+                    "__shared_hybrid__"
+                )
                 if precision is None or reward_vector is None:
-                    precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    precision = (
+                        self.lambda_val * np.ones(d_aug, dtype=np.float32)
+                        if self.diagonal_covariance
+                        else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    )
                     reward_vector = np.zeros(d_aug, dtype=np.float32)
                     reward_vector[-1] = self.lambda_val * 0.5
 
@@ -1962,10 +2300,17 @@ class AsyncBayesianRouter:
                 else:
                     theta_hat = np.linalg.solve(precision, reward_vector)
 
-                theta_sample = _sample_theta(
-                    theta_hat, precision, self.exploration_weight,
-                    self.diagonal_covariance, d_aug,
-                ) if self.mode == "lints" else None
+                theta_sample = (
+                    _sample_theta(
+                        theta_hat,
+                        precision,
+                        self.exploration_weight,
+                        self.diagonal_covariance,
+                        d_aug,
+                    )
+                    if self.mode == "lints"
+                    else None
+                )
 
                 best_candidate = None
                 highest_score = -float("inf")
@@ -1975,9 +2320,13 @@ class AsyncBayesianRouter:
                     x_augmented = np.concatenate([x_c, t_a, [1.0]])
 
                     score = _linear_score(
-                        x_augmented, theta_hat, precision,
-                        self.mode, self.exploration_weight,
-                        self.diagonal_covariance, theta_sample,
+                        x_augmented,
+                        theta_hat,
+                        precision,
+                        self.mode,
+                        self.exploration_weight,
+                        self.diagonal_covariance,
+                        theta_sample,
                     )
 
                     if score > highest_score:
@@ -1994,28 +2343,38 @@ class AsyncBayesianRouter:
             else:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
-                
+
                 if hasattr(self.embedder, "aembed_query"):
                     x_seq = await self.embedder.aembed_query(context_text)
                 else:
                     x_seq = self.embedder.embed_query(context_text)
-                
+
                 x = np.array(x_seq, dtype=np.float32)
                 d = len(x)
-                context_key = await self._resolve_context_key(context_text, precomputed_vector=x)
+                context_key = await self._resolve_context_key(
+                    context_text, precomputed_vector=x
+                )
                 x_augmented = np.append(x, 1.0)
                 d_aug = d + 1
-                
+
                 best_candidate = None
                 highest_score = -float("inf")
-                
+
                 for candidate_name in candidates:
-                    prior_alpha, prior_beta = await self.get_prior(context_text, candidate_name)
+                    prior_alpha, prior_beta = await self.get_prior(
+                        context_text, candidate_name
+                    )
                     prior_p = prior_alpha / (prior_alpha + prior_beta)
-                    
-                    precision, reward_vector = await self.storage.aget_linear_params(candidate_name)
+
+                    precision, reward_vector = await self.storage.aget_linear_params(
+                        candidate_name
+                    )
                     if precision is None or reward_vector is None:
-                        precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                        precision = (
+                            self.lambda_val * np.ones(d_aug, dtype=np.float32)
+                            if self.diagonal_covariance
+                            else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                        )
                         reward_vector = np.zeros(d_aug, dtype=np.float32)
                         reward_vector[-1] = self.lambda_val * prior_p
 
@@ -2024,14 +2383,25 @@ class AsyncBayesianRouter:
                     else:
                         theta_hat = np.linalg.solve(precision, reward_vector)
 
-                    theta_sample = _sample_theta(
-                        theta_hat, precision, self.exploration_weight,
-                        self.diagonal_covariance, d_aug,
-                    ) if self.mode == "lints" else None
+                    theta_sample = (
+                        _sample_theta(
+                            theta_hat,
+                            precision,
+                            self.exploration_weight,
+                            self.diagonal_covariance,
+                            d_aug,
+                        )
+                        if self.mode == "lints"
+                        else None
+                    )
                     score = _linear_score(
-                        x_augmented, theta_hat, precision,
-                        self.mode, self.exploration_weight,
-                        self.diagonal_covariance, theta_sample,
+                        x_augmented,
+                        theta_hat,
+                        precision,
+                        self.mode,
+                        self.exploration_weight,
+                        self.diagonal_covariance,
+                        theta_sample,
                     )
 
                     if score > highest_score:
@@ -2064,7 +2434,9 @@ class AsyncBayesianRouter:
                 fallback_choice = candidates[0]
 
             fallback_trace_id = self._generate_trace_id("fallback_ctx", fallback_choice)
-            await self.storage.log_selection(fallback_trace_id, "fallback_ctx", fallback_choice)
+            await self.storage.log_selection(
+                fallback_trace_id, "fallback_ctx", fallback_choice
+            )
             return fallback_choice, fallback_trace_id
 
     async def afeedback(
@@ -2114,17 +2486,19 @@ class AsyncBayesianRouter:
             elif self.hybrid:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
-                
+
                 if hasattr(self.embedder, "aembed_query"):
                     x_seq = await self.embedder.aembed_query(context_text)
                 else:
                     x_seq = self.embedder.embed_query(context_text)
-                
+
                 x_c = np.array(x_seq, dtype=np.float32)
                 t_a = await self._get_candidate_embedding(candidate_name)
                 x_augmented = np.concatenate([x_c, t_a, [1.0]])
 
-                prior_alpha, prior_beta = await self.get_prior(context_text, candidate_name)
+                prior_alpha, prior_beta = await self.get_prior(
+                    context_text, candidate_name
+                )
                 prior_p = prior_alpha / (prior_alpha + prior_beta)
 
                 precision, reward_vector = await self.storage.adecay_and_update_linear(
@@ -2137,27 +2511,31 @@ class AsyncBayesianRouter:
                     diagonal=self.diagonal_covariance,
                 )
 
-                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
+                return _linear_posterior(
+                    x_augmented, precision, reward_vector, self.diagonal_covariance
+                )
 
             else:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
-                
+
                 if hasattr(self.embedder, "aembed_query"):
                     x_seq = await self.embedder.aembed_query(context_text)
                 else:
                     x_seq = self.embedder.embed_query(context_text)
-                    
+
                 x = np.array(x_seq, dtype=np.float32)
-                context_key = await self._resolve_context_key(context_text, precomputed_vector=x)
+                context_key = await self._resolve_context_key(
+                    context_text, precomputed_vector=x
+                )
                 x_augmented = np.append(x, 1.0)
-                
+
                 if candidate_name in self.priors:
                     alpha, beta = self.priors[candidate_name]
                     prior_p = alpha / (alpha + beta)
                 else:
                     prior_p = 0.5
-                
+
                 precision, reward_vector = await self.storage.adecay_and_update_linear(
                     candidate_name=candidate_name,
                     decay_factor=self.decay_factor,
@@ -2167,8 +2545,10 @@ class AsyncBayesianRouter:
                     prior_p=prior_p,
                     diagonal=self.diagonal_covariance,
                 )
-                
-                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
+
+                return _linear_posterior(
+                    x_augmented, precision, reward_vector, self.diagonal_covariance
+                )
 
         except Exception as e:
             if strict:
@@ -2227,7 +2607,9 @@ class AsyncBayesianRouter:
                     logger.warning(
                         f"Context vector not found for key {context_key}. Using zero vector as fallback."
                     )
-                    precision, _ = await self.storage.aget_linear_params("__shared_hybrid__")
+                    precision, _ = await self.storage.aget_linear_params(
+                        "__shared_hybrid__"
+                    )
                     if precision is not None:
                         d = len(precision) - len(t_a) - 1
                     else:
@@ -2235,15 +2617,15 @@ class AsyncBayesianRouter:
                     x = np.zeros(d, dtype=np.float32)
                 else:
                     x = np.array(x_seq, dtype=np.float32)
-                
+
                 x_augmented = np.concatenate([x, t_a, [1.0]])
-                
+
                 if candidate_name in self.priors:
                     alpha, beta = self.priors[candidate_name]
                     prior_p = alpha / (alpha + beta)
                 else:
                     prior_p = 0.5
-                
+
                 precision, reward_vector = await self.storage.adecay_and_update_linear(
                     candidate_name="__shared_hybrid__",
                     decay_factor=self.decay_factor,
@@ -2253,8 +2635,10 @@ class AsyncBayesianRouter:
                     prior_p=prior_p,
                     diagonal=self.diagonal_covariance,
                 )
-                
-                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
+
+                return _linear_posterior(
+                    x_augmented, precision, reward_vector, self.diagonal_covariance
+                )
 
             else:
                 x_seq = await self._context_store.aget_context_vector(context_key)
@@ -2270,15 +2654,15 @@ class AsyncBayesianRouter:
                     x = np.zeros(d, dtype=np.float32)
                 else:
                     x = np.array(x_seq, dtype=np.float32)
-                
+
                 x_augmented = np.append(x, 1.0)
-                
+
                 if candidate_name in self.priors:
                     alpha, beta = self.priors[candidate_name]
                     prior_p = alpha / (alpha + beta)
                 else:
                     prior_p = 0.5
-                
+
                 precision, reward_vector = await self.storage.adecay_and_update_linear(
                     candidate_name=candidate_name,
                     decay_factor=self.decay_factor,
@@ -2288,8 +2672,10 @@ class AsyncBayesianRouter:
                     prior_p=prior_p,
                     diagonal=self.diagonal_covariance,
                 )
-                
-                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
+
+                return _linear_posterior(
+                    x_augmented, precision, reward_vector, self.diagonal_covariance
+                )
 
         except Exception as e:
             if strict:
@@ -2325,58 +2711,82 @@ class AsyncBayesianRouter:
         try:
             context_key = await self._resolve_context_key(context_text)
             if self.mode == "clustering":
-                alpha, beta = await self.storage.get_candidate_params(context_key, candidate_name)
-                if not await self.storage.ahas_candidate_params(context_key, candidate_name):
+                alpha, beta = await self.storage.get_candidate_params(
+                    context_key, candidate_name
+                )
+                if not await self.storage.ahas_candidate_params(
+                    context_key, candidate_name
+                ):
                     alpha, beta = await self.get_prior(context_text, candidate_name)
                 return alpha, beta
             elif self.hybrid:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
-                
+
                 if hasattr(self.embedder, "aembed_query"):
                     x_seq = await self.embedder.aembed_query(context_text)
                 else:
                     x_seq = self.embedder.embed_query(context_text)
-                    
+
                 x_c = np.array(x_seq, dtype=np.float32)
                 t_a = await self._get_candidate_embedding(candidate_name)
                 x_augmented = np.concatenate([x_c, t_a, [1.0]])
                 d_aug = len(x_augmented)
 
-                prior_alpha, prior_beta = await self.get_prior(context_text, candidate_name)
+                prior_alpha, prior_beta = await self.get_prior(
+                    context_text, candidate_name
+                )
                 prior_p = prior_alpha / (prior_alpha + prior_beta)
 
-                precision, reward_vector = await self.storage.aget_linear_params("__shared_hybrid__")
+                precision, reward_vector = await self.storage.aget_linear_params(
+                    "__shared_hybrid__"
+                )
                 if precision is None or reward_vector is None:
-                    precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    precision = (
+                        self.lambda_val * np.ones(d_aug, dtype=np.float32)
+                        if self.diagonal_covariance
+                        else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    )
                     reward_vector = np.zeros(d_aug, dtype=np.float32)
                     reward_vector[-1] = self.lambda_val * prior_p
 
-                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
+                return _linear_posterior(
+                    x_augmented, precision, reward_vector, self.diagonal_covariance
+                )
 
             else:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
-                
+
                 if hasattr(self.embedder, "aembed_query"):
                     x_seq = await self.embedder.aembed_query(context_text)
                 else:
                     x_seq = self.embedder.embed_query(context_text)
-                    
+
                 x = np.array(x_seq, dtype=np.float32)
                 x_augmented = np.append(x, 1.0)
                 d_aug = len(x_augmented)
-                
-                prior_alpha, prior_beta = await self.get_prior(context_text, candidate_name)
+
+                prior_alpha, prior_beta = await self.get_prior(
+                    context_text, candidate_name
+                )
                 prior_p = prior_alpha / (prior_alpha + prior_beta)
-                
-                precision, reward_vector = await self.storage.aget_linear_params(candidate_name)
+
+                precision, reward_vector = await self.storage.aget_linear_params(
+                    candidate_name
+                )
                 if precision is None or reward_vector is None:
-                    precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    precision = (
+                        self.lambda_val * np.ones(d_aug, dtype=np.float32)
+                        if self.diagonal_covariance
+                        else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    )
                     reward_vector = np.zeros(d_aug, dtype=np.float32)
                     reward_vector[-1] = self.lambda_val * prior_p
-                
-                return _linear_posterior(x_augmented, precision, reward_vector, self.diagonal_covariance)
+
+                return _linear_posterior(
+                    x_augmented, precision, reward_vector, self.diagonal_covariance
+                )
         except Exception as e:
             logger.exception("AsyncBayesianRouter aget_candidate_beliefs failed.")
             await self._call_telemetry(
@@ -2399,7 +2809,9 @@ class AsyncBayesianRouter:
             elif hasattr(self.embedder, "embed_queries"):
                 vectors = self.embedder.embed_queries(contexts)
             elif hasattr(self.embedder, "aembed_query"):
-                vectors = await asyncio.gather(*(self.embedder.aembed_query(ctx) for ctx in contexts))
+                vectors = await asyncio.gather(
+                    *(self.embedder.aembed_query(ctx) for ctx in contexts)
+                )
             else:
                 vectors = [self.embedder.embed_query(ctx) for ctx in contexts]
         except Exception:
@@ -2465,10 +2877,14 @@ class AsyncBayesianRouter:
         try:
             if self.mode == "clustering":
                 context_keys = await self._resolve_context_keys(contexts)
-                
-                param_keys = [(ctx_key, candidate_name) for ctx_key in context_keys for candidate_name in candidates]
+
+                param_keys = [
+                    (ctx_key, candidate_name)
+                    for ctx_key in context_keys
+                    for candidate_name in candidates
+                ]
                 param_dict = await self.storage.get_candidate_params_batch(param_keys)
-                
+
                 priors_to_update = {}
                 results = []
                 for idx, context_key in enumerate(context_keys):
@@ -2477,13 +2893,22 @@ class AsyncBayesianRouter:
                     highest_sample = -1.0
 
                     for candidate_name in candidates:
-                        alpha, beta = param_dict.get((context_key, candidate_name), (1.0, 1.0))
+                        alpha, beta = param_dict.get(
+                            (context_key, candidate_name), (1.0, 1.0)
+                        )
 
-                        if not await self.storage.ahas_candidate_params(context_key, candidate_name):
-                            prior_alpha, prior_beta = await self.get_prior(context_text, candidate_name)
+                        if not await self.storage.ahas_candidate_params(
+                            context_key, candidate_name
+                        ):
+                            prior_alpha, prior_beta = await self.get_prior(
+                                context_text, candidate_name
+                            )
                             if prior_alpha != 1.0 or prior_beta != 1.0:
                                 alpha, beta = prior_alpha, prior_beta
-                                priors_to_update[(context_key, candidate_name)] = (alpha, beta)
+                                priors_to_update[(context_key, candidate_name)] = (
+                                    alpha,
+                                    beta,
+                                )
 
                         sampled_score = np.random.beta(alpha, beta)
 
@@ -2495,39 +2920,56 @@ class AsyncBayesianRouter:
                         best_candidate = candidates[0]
 
                     trace_id = self._generate_trace_id(context_key, best_candidate)
-                    await self.storage.log_selection(trace_id, context_key, best_candidate)
+                    await self.storage.log_selection(
+                        trace_id, context_key, best_candidate
+                    )
                     results.append((best_candidate, trace_id))
 
                 if priors_to_update:
                     if hasattr(self.storage, "update_candidate_params_batch"):
-                        await self.storage.update_candidate_params_batch(priors_to_update)
+                        await self.storage.update_candidate_params_batch(
+                            priors_to_update
+                        )
                     else:
-                        for (ctx_key, candidate_name), (alpha, beta) in priors_to_update.items():
-                            await self.storage.update_candidate_params(ctx_key, candidate_name, alpha, beta)
+                        for (ctx_key, candidate_name), (
+                            alpha,
+                            beta,
+                        ) in priors_to_update.items():
+                            await self.storage.update_candidate_params(
+                                ctx_key, candidate_name, alpha, beta
+                            )
 
                 return results
 
             elif self.hybrid:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
-                
+
                 if hasattr(self.embedder, "aembed_queries"):
                     vectors = await self.embedder.aembed_queries(contexts)
                 elif hasattr(self.embedder, "embed_queries"):
                     vectors = self.embedder.embed_queries(contexts)
                 elif hasattr(self.embedder, "aembed_query"):
-                    vectors = await asyncio.gather(*(self.embedder.aembed_query(ctx) for ctx in contexts))
+                    vectors = await asyncio.gather(
+                        *(self.embedder.aembed_query(ctx) for ctx in contexts)
+                    )
                 else:
                     vectors = [self.embedder.embed_query(ctx) for ctx in contexts]
 
                 context_keys = await self._resolve_context_keys(contexts)
-                
+
                 t_first = await self._get_candidate_embedding(candidates[0])
                 d_aug = len(vectors[0]) + len(t_first) + 1
-                
-                precision, reward_vector = await self.storage.aget_linear_params("__shared_hybrid__")
+
+                precision, reward_vector = await self.storage.aget_linear_params(
+                    "__shared_hybrid__"
+                )
                 if precision is None or reward_vector is None:
-                    precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    precision = (
+                        self.lambda_val * np.ones(d_aug, dtype=np.float32)
+                        if self.diagonal_covariance
+                        else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                    )
                     reward_vector = np.zeros(d_aug, dtype=np.float32)
                     reward_vector[-1] = self.lambda_val * 0.5
 
@@ -2540,11 +2982,18 @@ class AsyncBayesianRouter:
                 for idx, x_seq in enumerate(vectors):
                     x_c = np.array(x_seq, dtype=np.float32)
                     context_key = context_keys[idx]
-                    
-                    theta_sample = _sample_theta(
-                        theta_hat, precision, self.exploration_weight,
-                        self.diagonal_covariance, d_aug,
-                    ) if self.mode == "lints" else None
+
+                    theta_sample = (
+                        _sample_theta(
+                            theta_hat,
+                            precision,
+                            self.exploration_weight,
+                            self.diagonal_covariance,
+                            d_aug,
+                        )
+                        if self.mode == "lints"
+                        else None
+                    )
 
                     best_candidate = None
                     highest_score = -float("inf")
@@ -2554,9 +3003,13 @@ class AsyncBayesianRouter:
                         x_augmented = np.concatenate([x_c, t_a, [1.0]])
 
                         score = _linear_score(
-                            x_augmented, theta_hat, precision,
-                            self.mode, self.exploration_weight,
-                            self.diagonal_covariance, theta_sample,
+                            x_augmented,
+                            theta_hat,
+                            precision,
+                            self.mode,
+                            self.exploration_weight,
+                            self.diagonal_covariance,
+                            theta_sample,
                         )
 
                         if score > highest_score:
@@ -2567,7 +3020,9 @@ class AsyncBayesianRouter:
                         best_candidate = candidates[0]
 
                     trace_id = self._generate_trace_id(context_key, best_candidate)
-                    await self.storage.log_selection(trace_id, context_key, best_candidate)
+                    await self.storage.log_selection(
+                        trace_id, context_key, best_candidate
+                    )
                     results.append((best_candidate, trace_id))
 
                 return results
@@ -2575,22 +3030,28 @@ class AsyncBayesianRouter:
             else:
                 if self.embedder is None:
                     raise ValueError("embedder is required for linear bandit mode")
-                
+
                 if hasattr(self.embedder, "aembed_queries"):
                     vectors = await self.embedder.aembed_queries(contexts)
                 elif hasattr(self.embedder, "embed_queries"):
                     vectors = self.embedder.embed_queries(contexts)
                 elif hasattr(self.embedder, "aembed_query"):
-                    vectors = await asyncio.gather(*(self.embedder.aembed_query(ctx) for ctx in contexts))
+                    vectors = await asyncio.gather(
+                        *(self.embedder.aembed_query(ctx) for ctx in contexts)
+                    )
                 else:
                     vectors = [self.embedder.embed_query(ctx) for ctx in contexts]
-                
+
                 tool_params = {}
                 if hasattr(self.storage, "aget_linear_params_batch"):
-                    tool_params = await self.storage.aget_linear_params_batch(candidates)
+                    tool_params = await self.storage.aget_linear_params_batch(
+                        candidates
+                    )
                 else:
                     for candidate_name in candidates:
-                        tool_params[candidate_name] = await self.storage.aget_linear_params(candidate_name)
+                        tool_params[candidate_name] = (
+                            await self.storage.aget_linear_params(candidate_name)
+                        )
 
                 context_keys = await self._resolve_context_keys(contexts)
                 results = []
@@ -2601,17 +3062,25 @@ class AsyncBayesianRouter:
                     d_aug = d + 1
                     context_key = context_keys[idx]
                     context_text = contexts[idx]
-                    
+
                     best_candidate = None
                     highest_score = -float("inf")
-                    
+
                     for candidate_name in candidates:
-                        prior_alpha, prior_beta = await self.get_prior(context_text, candidate_name)
+                        prior_alpha, prior_beta = await self.get_prior(
+                            context_text, candidate_name
+                        )
                         prior_p = prior_alpha / (prior_alpha + prior_beta)
-                        
-                        precision, reward_vector = tool_params.get(candidate_name, (None, None))
+
+                        precision, reward_vector = tool_params.get(
+                            candidate_name, (None, None)
+                        )
                         if precision is None or reward_vector is None:
-                            precision = self.lambda_val * np.ones(d_aug, dtype=np.float32) if self.diagonal_covariance else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                            precision = (
+                                self.lambda_val * np.ones(d_aug, dtype=np.float32)
+                                if self.diagonal_covariance
+                                else self.lambda_val * np.eye(d_aug, dtype=np.float32)
+                            )
                             reward_vector = np.zeros(d_aug, dtype=np.float32)
                             reward_vector[-1] = self.lambda_val * prior_p
 
@@ -2620,14 +3089,25 @@ class AsyncBayesianRouter:
                         else:
                             theta_hat = np.linalg.solve(precision, reward_vector)
 
-                        theta_sample = _sample_theta(
-                            theta_hat, precision, self.exploration_weight,
-                            self.diagonal_covariance, d_aug,
-                        ) if self.mode == "lints" else None
+                        theta_sample = (
+                            _sample_theta(
+                                theta_hat,
+                                precision,
+                                self.exploration_weight,
+                                self.diagonal_covariance,
+                                d_aug,
+                            )
+                            if self.mode == "lints"
+                            else None
+                        )
                         score = _linear_score(
-                            x_augmented, theta_hat, precision,
-                            self.mode, self.exploration_weight,
-                            self.diagonal_covariance, theta_sample,
+                            x_augmented,
+                            theta_hat,
+                            precision,
+                            self.mode,
+                            self.exploration_weight,
+                            self.diagonal_covariance,
+                            theta_sample,
                         )
 
                         if score > highest_score:
@@ -2638,13 +3118,17 @@ class AsyncBayesianRouter:
                         best_candidate = candidates[0]
 
                     trace_id = self._generate_trace_id(context_key, best_candidate)
-                    await self.storage.log_selection(trace_id, context_key, best_candidate)
+                    await self.storage.log_selection(
+                        trace_id, context_key, best_candidate
+                    )
                     results.append((best_candidate, trace_id))
 
                 return results
 
         except Exception as e:
-            logger.exception("AsyncBayesianRouter batch routing failed. Triggering fail-safe fallback.")
+            logger.exception(
+                "AsyncBayesianRouter batch routing failed. Triggering fail-safe fallback."
+            )
             await self._call_telemetry(
                 "route_batch_failure",
                 e,
@@ -2654,10 +3138,16 @@ class AsyncBayesianRouter:
                 },
             )
 
-            fallback_choice = self.fallback_candidate if (self.fallback_candidate and self.fallback_candidate in candidates) else candidates[0]
+            fallback_choice = (
+                self.fallback_candidate
+                if (self.fallback_candidate and self.fallback_candidate in candidates)
+                else candidates[0]
+            )
             fallback_trace_id = self._generate_trace_id("fallback_ctx", fallback_choice)
             for _ in contexts:
-                await self.storage.log_selection(fallback_trace_id, "fallback_ctx", fallback_choice)
+                await self.storage.log_selection(
+                    fallback_trace_id, "fallback_ctx", fallback_choice
+                )
             return [(fallback_choice, fallback_trace_id)] * len(contexts)
 
     async def afeedback_batch(self, feedbacks: List[Dict[str, Any]]) -> None:
@@ -2670,43 +3160,57 @@ class AsyncBayesianRouter:
             contexts_to_embed = []
             contexts_to_embed_indices = []
             prepared_feedbacks = []
-            
+
             for fb in feedbacks:
                 success = fb.get("success")
                 reward = fb.get("reward")
-                
+
                 if success is None and reward is None:
-                    raise ValueError("Either 'success' or 'reward' must be provided in feedback.")
+                    raise ValueError(
+                        "Either 'success' or 'reward' must be provided in feedback."
+                    )
                 if success is not None and reward is not None:
                     expected_reward = 1.0 if success else 0.0
                     if reward != expected_reward:
                         raise ValueError(
                             f"Conflicting feedback: success={success} and reward={reward}."
                         )
-                
-                reward_val = float(reward) if reward is not None else (1.0 if success else 0.0)
-                
+
+                reward_val = (
+                    float(reward) if reward is not None else (1.0 if success else 0.0)
+                )
+
                 trace_id = fb.get("trace_id")
                 if trace_id is not None:
                     context_key, candidate_name = self._decode_trace_id(trace_id)
-                    prepared_feedbacks.append({
-                        "type": "trace",
-                        "context_key": context_key,
-                        "candidate_name": candidate_name,
-                        "reward_val": reward_val,
-                    })
+                    prepared_feedbacks.append(
+                        {
+                            "type": "trace",
+                            "context_key": context_key,
+                            "candidate_name": candidate_name,
+                            "reward_val": reward_val,
+                        }
+                    )
                 else:
-                    context_text = fb.get("context_text") if fb.get("context_text") is not None else fb.get("context_key")
+                    context_text = (
+                        fb.get("context_text")
+                        if fb.get("context_text") is not None
+                        else fb.get("context_key")
+                    )
                     candidate_name = fb.get("candidate_name")
                     if not context_text or not candidate_name:
-                        raise ValueError("Feedback must contain either 'trace_id' or context and candidate identifiers.")
-                    
-                    prepared_feedbacks.append({
-                        "type": "text",
-                        "context_text": context_text,
-                        "candidate_name": candidate_name,
-                        "reward_val": reward_val,
-                    })
+                        raise ValueError(
+                            "Feedback must contain either 'trace_id' or context and candidate identifiers."
+                        )
+
+                    prepared_feedbacks.append(
+                        {
+                            "type": "text",
+                            "context_text": context_text,
+                            "candidate_name": candidate_name,
+                            "reward_val": reward_val,
+                        }
+                    )
                     contexts_to_embed.append(context_text)
                     contexts_to_embed_indices.append(len(prepared_feedbacks) - 1)
 
@@ -2714,23 +3218,34 @@ class AsyncBayesianRouter:
                 resolved_keys = await self._resolve_context_keys(contexts_to_embed)
                 for idx, key in zip(contexts_to_embed_indices, resolved_keys):
                     prepared_feedbacks[idx]["context_key"] = key
-                    
+
                 if self.mode != "clustering":
                     if hasattr(self.embedder, "aembed_queries"):
                         vectors = await self.embedder.aembed_queries(contexts_to_embed)
                     elif hasattr(self.embedder, "embed_queries"):
                         vectors = self.embedder.embed_queries(contexts_to_embed)
                     elif hasattr(self.embedder, "aembed_query"):
-                        vectors = await asyncio.gather(*(self.embedder.aembed_query(t) for t in contexts_to_embed))
+                        vectors = await asyncio.gather(
+                            *(self.embedder.aembed_query(t) for t in contexts_to_embed)
+                        )
                     else:
-                        vectors = [self.embedder.embed_query(t) for t in contexts_to_embed]
+                        vectors = [
+                            self.embedder.embed_query(t) for t in contexts_to_embed
+                        ]
                     for idx, vector in zip(contexts_to_embed_indices, vectors):
                         prepared_feedbacks[idx]["vector"] = vector
 
             if self.mode == "clustering":
                 updates = []
                 for fb in prepared_feedbacks:
-                    updates.append((fb["context_key"], fb["candidate_name"], self.decay_factor, fb["reward_val"]))
+                    updates.append(
+                        (
+                            fb["context_key"],
+                            fb["candidate_name"],
+                            self.decay_factor,
+                            fb["reward_val"],
+                        )
+                    )
                 await self.storage.decay_and_update_batch(updates)
             elif self.hybrid:
                 updates = []
@@ -2740,12 +3255,16 @@ class AsyncBayesianRouter:
                     t_a = await self._get_candidate_embedding(candidate_name)
 
                     if fb["type"] == "trace":
-                        x_seq = await self._context_store.aget_context_vector(fb["context_key"])
+                        x_seq = await self._context_store.aget_context_vector(
+                            fb["context_key"]
+                        )
                         if x_seq is None:
                             logger.warning(
                                 f"Context vector not found for key {fb['context_key']}. Using zero vector as fallback."
                             )
-                            precision, _ = await self.storage.aget_linear_params("__shared_hybrid__")
+                            precision, _ = await self.storage.aget_linear_params(
+                                "__shared_hybrid__"
+                            )
                             if precision is not None:
                                 d = len(precision) - len(t_a) - 1
                             else:
@@ -2764,7 +3283,17 @@ class AsyncBayesianRouter:
                     else:
                         prior_p = 0.5
 
-                    updates.append(("__shared_hybrid__", self.decay_factor, reward_val, x_augmented, self.lambda_val, prior_p, self.diagonal_covariance))
+                    updates.append(
+                        (
+                            "__shared_hybrid__",
+                            self.decay_factor,
+                            reward_val,
+                            x_augmented,
+                            self.lambda_val,
+                            prior_p,
+                            self.diagonal_covariance,
+                        )
+                    )
 
                 await self.storage.adecay_and_update_linear_batch(updates)
 
@@ -2773,14 +3302,18 @@ class AsyncBayesianRouter:
                 for fb in prepared_feedbacks:
                     candidate_name = fb["candidate_name"]
                     reward_val = fb["reward_val"]
-                    
+
                     if fb["type"] == "trace":
-                        x_seq = await self._context_store.aget_context_vector(fb["context_key"])
+                        x_seq = await self._context_store.aget_context_vector(
+                            fb["context_key"]
+                        )
                         if x_seq is None:
                             logger.warning(
                                 f"Context vector not found for key {fb['context_key']}. Using zero vector as fallback."
                             )
-                            precision, _ = await self.storage.aget_linear_params(candidate_name)
+                            precision, _ = await self.storage.aget_linear_params(
+                                candidate_name
+                            )
                             if precision is not None:
                                 d = len(precision) - 1
                             else:
@@ -2790,29 +3323,42 @@ class AsyncBayesianRouter:
                             x = np.array(x_seq, dtype=np.float32)
                     else:
                         x = np.array(fb["vector"], dtype=np.float32)
-                    
+
                     x_augmented = np.append(x, 1.0)
-                    
+
                     if candidate_name in self.priors:
                         alpha, beta = self.priors[candidate_name]
                         prior_p = alpha / (alpha + beta)
                     else:
                         prior_p = 0.5
-                        
-                    updates.append((candidate_name, self.decay_factor, reward_val, x_augmented, self.lambda_val, prior_p, self.diagonal_covariance))
-                    
+
+                    updates.append(
+                        (
+                            candidate_name,
+                            self.decay_factor,
+                            reward_val,
+                            x_augmented,
+                            self.lambda_val,
+                            prior_p,
+                            self.diagonal_covariance,
+                        )
+                    )
+
                 await self.storage.adecay_and_update_linear_batch(updates)
 
             # Log trace feedback
             for fb in feedbacks:
                 trace_id = fb.get("trace_id")
                 if trace_id is not None:
-                    reward_val = float(fb.get("reward")) if fb.get("reward") is not None else (1.0 if fb.get("success") else 0.0)
+                    reward_val = (
+                        float(fb.get("reward"))
+                        if fb.get("reward") is not None
+                        else (1.0 if fb.get("success") else 0.0)
+                    )
                     await self.storage.log_feedback(trace_id, reward_val)
 
         except Exception as e:
             logger.exception("AsyncBayesianRouter batch feedback submission failed.")
-            await self._call_telemetry("feedback_batch_failure", e, {"feedbacks": feedbacks})
-
-
-
+            await self._call_telemetry(
+                "feedback_batch_failure", e, {"feedbacks": feedbacks}
+            )

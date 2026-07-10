@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Protocol, Sequence
 
 import numpy as np
 
+
 class ContextEmbedder(Protocol):
     """Protocol defining how to convert text into a vector context key."""
 
@@ -31,7 +32,6 @@ class AsyncContextEmbedder(Protocol):
     async def aembed_queries(self, texts: List[str]) -> List[Sequence[float]]:
         """Convert multiple text queries into vectors of floats asynchronously."""
         ...
-
 
 
 class VectorStoreProtocol(Protocol):
@@ -95,7 +95,6 @@ class LocalSentenceTransformerEmbedder:
         return await loop.run_in_executor(None, self.embed_queries, texts)
 
 
-
 class GeminiEmbedder:
     """
     Lightweight, API-driven embedder using Google's Gemini (Generative Language) API.
@@ -119,8 +118,12 @@ class GeminiEmbedder:
     def embed_query(self, text: str) -> Sequence[float]:
         if self.client is not None:
             # Try new SDK style: client.models.embed_content
-            if hasattr(self.client, "models") and hasattr(self.client.models, "embed_content"):
-                resp = self.client.models.embed_content(model=self.model_name, contents=text)
+            if hasattr(self.client, "models") and hasattr(
+                self.client.models, "embed_content"
+            ):
+                resp = self.client.models.embed_content(
+                    model=self.model_name, contents=text
+                )
                 if hasattr(resp, "embedding") and hasattr(resp.embedding, "values"):
                     return [float(x) for x in resp.embedding.values]
             # Try legacy SDK style or module: client.embed_content
@@ -136,7 +139,9 @@ class GeminiEmbedder:
                     if hasattr(emb, "values"):
                         return [float(x) for x in emb.values]
                     return [float(x) for x in emb]
-            raise ValueError("Provided client does not have embed_content method or expected structure.")
+            raise ValueError(
+                "Provided client does not have embed_content method or expected structure."
+            )
 
         if not self.api_key:
             raise ValueError(
@@ -148,38 +153,46 @@ class GeminiEmbedder:
             model = f"models/{model}"
 
         url = f"{self.base_url}/{self.api_version}/{model}:embedContent?key={self.api_key}"
-        payload = {
-            "content": {
-                "parts": [{"text": text}]
-            }
-        }
-        
+        payload = {"content": {"parts": [{"text": text}]}}
+
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        
+
         try:
             with urllib.request.urlopen(req, timeout=30) as response:
                 resp_data = json.loads(response.read().decode("utf-8"))
                 if "embedding" in resp_data and "values" in resp_data["embedding"]:
                     return [float(x) for x in resp_data["embedding"]["values"]]
-                raise ValueError(f"Unexpected response structure from Gemini API: {resp_data}")
+                raise ValueError(
+                    f"Unexpected response structure from Gemini API: {resp_data}"
+                )
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8")
-            raise RuntimeError(f"Gemini API request failed with status {e.code}: {err_body}") from e
+            raise RuntimeError(
+                f"Gemini API request failed with status {e.code}: {err_body}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with Gemini API: {e}") from e
 
     async def aembed_query(self, text: str) -> Sequence[float]:
         if self.client is not None:
-            if hasattr(self.client, "aio") and hasattr(self.client.aio, "models") and hasattr(self.client.aio.models, "embed_content"):
-                resp = await self.client.aio.models.embed_content(model=self.model_name, contents=text)
+            if (
+                hasattr(self.client, "aio")
+                and hasattr(self.client.aio, "models")
+                and hasattr(self.client.aio.models, "embed_content")
+            ):
+                resp = await self.client.aio.models.embed_content(
+                    model=self.model_name, contents=text
+                )
                 if hasattr(resp, "embedding") and hasattr(resp.embedding, "values"):
                     return [float(x) for x in resp.embedding.values]
-            if hasattr(self.client, "models") and hasattr(self.client.models, "embed_content"):
+            if hasattr(self.client, "models") and hasattr(
+                self.client.models, "embed_content"
+            ):
                 func = self.client.models.embed_content
                 if asyncio.iscoroutinefunction(func):
                     resp = await func(model=self.model_name, contents=text)
@@ -188,7 +201,9 @@ class GeminiEmbedder:
                 if hasattr(resp, "embedding") and hasattr(resp.embedding, "values"):
                     return [float(x) for x in resp.embedding.values]
             if hasattr(self.client, "embed_content_async"):
-                resp = await self.client.embed_content_async(model=self.model_name, contents=text)
+                resp = await self.client.embed_content_async(
+                    model=self.model_name, contents=text
+                )
                 if isinstance(resp, dict) and "embedding" in resp:
                     embedding_val = resp["embedding"]
                     if isinstance(embedding_val, dict) and "values" in embedding_val:
@@ -215,7 +230,9 @@ class GeminiEmbedder:
                     if hasattr(emb, "values"):
                         return [float(x) for x in emb.values]
                     return [float(x) for x in emb]
-            raise ValueError("Provided client does not have embed_content method or expected structure.")
+            raise ValueError(
+                "Provided client does not have embed_content method or expected structure."
+            )
 
         if not self.api_key:
             raise ValueError(
@@ -227,12 +244,8 @@ class GeminiEmbedder:
             model = f"models/{model}"
 
         url = f"{self.base_url}/{self.api_version}/{model}:embedContent?key={self.api_key}"
-        payload = {
-            "content": {
-                "parts": [{"text": text}]
-            }
-        }
-        
+        payload = {"content": {"parts": [{"text": text}]}}
+
         try:
             import httpx
         except ImportError:
@@ -244,17 +257,19 @@ class GeminiEmbedder:
         try:
             async with httpx.AsyncClient(timeout=30.0) as httpx_client:
                 response = await httpx_client.post(
-                    url,
-                    json=payload,
-                    headers={"Content-Type": "application/json"}
+                    url, json=payload, headers={"Content-Type": "application/json"}
                 )
                 response.raise_for_status()
                 resp_data = response.json()
                 if "embedding" in resp_data and "values" in resp_data["embedding"]:
                     return [float(x) for x in resp_data["embedding"]["values"]]
-                raise ValueError(f"Unexpected response structure from Gemini API: {resp_data}")
+                raise ValueError(
+                    f"Unexpected response structure from Gemini API: {resp_data}"
+                )
         except httpx.HTTPStatusError as e:
-            raise RuntimeError(f"Gemini API request failed with status {e.response.status_code}: {e.response.text}") from e
+            raise RuntimeError(
+                f"Gemini API request failed with status {e.response.status_code}: {e.response.text}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with Gemini API: {e}") from e
 
@@ -263,10 +278,16 @@ class GeminiEmbedder:
             return []
         if self.client is not None:
             try:
-                if hasattr(self.client, "models") and hasattr(self.client.models, "embed_content"):
-                    resp = self.client.models.embed_content(model=self.model_name, contents=texts)
+                if hasattr(self.client, "models") and hasattr(
+                    self.client.models, "embed_content"
+                ):
+                    resp = self.client.models.embed_content(
+                        model=self.model_name, contents=texts
+                    )
                     if hasattr(resp, "embeddings"):
-                        return [[float(x) for x in emb.values] for emb in resp.embeddings]
+                        return [
+                            [float(x) for x in emb.values] for emb in resp.embeddings
+                        ]
             except Exception:
                 pass
             return [self.embed_query(t) for t in texts]
@@ -283,30 +304,34 @@ class GeminiEmbedder:
         url = f"{self.base_url}/{self.api_version}/{model}:batchEmbedContents?key={self.api_key}"
         payload = {
             "requests": [
-                {
-                    "model": model,
-                    "content": {"parts": [{"text": text}]}
-                }
+                {"model": model, "content": {"parts": [{"text": text}]}}
                 for text in texts
             ]
         }
-        
+
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        
+
         try:
             with urllib.request.urlopen(req, timeout=30) as response:
                 resp_data = json.loads(response.read().decode("utf-8"))
                 if "embeddings" in resp_data:
-                    return [[float(x) for x in emb["values"]] for emb in resp_data["embeddings"]]
-                raise ValueError(f"Unexpected response structure from Gemini API: {resp_data}")
+                    return [
+                        [float(x) for x in emb["values"]]
+                        for emb in resp_data["embeddings"]
+                    ]
+                raise ValueError(
+                    f"Unexpected response structure from Gemini API: {resp_data}"
+                )
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8")
-            raise RuntimeError(f"Gemini API request failed with status {e.code}: {err_body}") from e
+            raise RuntimeError(
+                f"Gemini API request failed with status {e.code}: {err_body}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with Gemini API: {e}") from e
 
@@ -315,10 +340,18 @@ class GeminiEmbedder:
             return []
         if self.client is not None:
             try:
-                if hasattr(self.client, "aio") and hasattr(self.client.aio, "models") and hasattr(self.client.aio.models, "embed_content"):
-                    resp = await self.client.aio.models.embed_content(model=self.model_name, contents=texts)
+                if (
+                    hasattr(self.client, "aio")
+                    and hasattr(self.client.aio, "models")
+                    and hasattr(self.client.aio.models, "embed_content")
+                ):
+                    resp = await self.client.aio.models.embed_content(
+                        model=self.model_name, contents=texts
+                    )
                     if hasattr(resp, "embeddings"):
-                        return [[float(x) for x in emb.values] for emb in resp.embeddings]
+                        return [
+                            [float(x) for x in emb.values] for emb in resp.embeddings
+                        ]
             except Exception:
                 pass
             return await asyncio.gather(*(self.aembed_query(t) for t in texts))
@@ -335,14 +368,11 @@ class GeminiEmbedder:
         url = f"{self.base_url}/{self.api_version}/{model}:batchEmbedContents?key={self.api_key}"
         payload = {
             "requests": [
-                {
-                    "model": model,
-                    "content": {"parts": [{"text": text}]}
-                }
+                {"model": model, "content": {"parts": [{"text": text}]}}
                 for text in texts
             ]
         }
-        
+
         try:
             import httpx
         except ImportError:
@@ -354,20 +384,24 @@ class GeminiEmbedder:
         try:
             async with httpx.AsyncClient(timeout=30.0) as httpx_client:
                 response = await httpx_client.post(
-                    url,
-                    json=payload,
-                    headers={"Content-Type": "application/json"}
+                    url, json=payload, headers={"Content-Type": "application/json"}
                 )
                 response.raise_for_status()
                 resp_data = response.json()
                 if "embeddings" in resp_data:
-                    return [[float(x) for x in emb["values"]] for emb in resp_data["embeddings"]]
-                raise ValueError(f"Unexpected response structure from Gemini API: {resp_data}")
+                    return [
+                        [float(x) for x in emb["values"]]
+                        for emb in resp_data["embeddings"]
+                    ]
+                raise ValueError(
+                    f"Unexpected response structure from Gemini API: {resp_data}"
+                )
         except httpx.HTTPStatusError as e:
-            raise RuntimeError(f"Gemini API request failed with status {e.response.status_code}: {e.response.text}") from e
+            raise RuntimeError(
+                f"Gemini API request failed with status {e.response.status_code}: {e.response.text}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with Gemini API: {e}") from e
-
 
 
 class OpenAIEmbedder:
@@ -385,7 +419,7 @@ class OpenAIEmbedder:
     ) -> None:
         self.model_name = model_name
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
-        
+
         env_base_url = os.environ.get("OPENAI_BASE_URL")
         if base_url:
             self.base_url = base_url.rstrip("/")
@@ -393,17 +427,21 @@ class OpenAIEmbedder:
             self.base_url = env_base_url.rstrip("/")
         else:
             self.base_url = "https://api.openai.com/v1"
-            
+
         self.client = client
 
     def embed_query(self, text: str) -> Sequence[float]:
         if self.client is not None:
-            if hasattr(self.client, "embeddings") and hasattr(self.client.embeddings, "create"):
+            if hasattr(self.client, "embeddings") and hasattr(
+                self.client.embeddings, "create"
+            ):
                 resp = self.client.embeddings.create(input=text, model=self.model_name)
                 if hasattr(resp, "data") and len(resp.data) > 0:
                     embedding_val = resp.data[0].embedding
                     return [float(x) for x in embedding_val]
-            raise ValueError("Provided client does not have embeddings.create method or expected structure.")
+            raise ValueError(
+                "Provided client does not have embeddings.create method or expected structure."
+            )
 
         if not self.api_key:
             raise ValueError(
@@ -415,34 +453,44 @@ class OpenAIEmbedder:
             "input": text,
             "model": self.model_name,
         }
-        
+
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
         }
-        
+
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
             headers=headers,
             method="POST",
         )
-        
+
         try:
             with urllib.request.urlopen(req, timeout=30) as response:
                 resp_data = json.loads(response.read().decode("utf-8"))
-                if "data" in resp_data and len(resp_data["data"]) > 0 and "embedding" in resp_data["data"][0]:
+                if (
+                    "data" in resp_data
+                    and len(resp_data["data"]) > 0
+                    and "embedding" in resp_data["data"][0]
+                ):
                     return [float(x) for x in resp_data["data"][0]["embedding"]]
-                raise ValueError(f"Unexpected response structure from OpenAI API: {resp_data}")
+                raise ValueError(
+                    f"Unexpected response structure from OpenAI API: {resp_data}"
+                )
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8")
-            raise RuntimeError(f"OpenAI API request failed with status {e.code}: {err_body}") from e
+            raise RuntimeError(
+                f"OpenAI API request failed with status {e.code}: {err_body}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with OpenAI API: {e}") from e
 
     async def aembed_query(self, text: str) -> Sequence[float]:
         if self.client is not None:
-            if hasattr(self.client, "embeddings") and hasattr(self.client.embeddings, "create"):
+            if hasattr(self.client, "embeddings") and hasattr(
+                self.client.embeddings, "create"
+            ):
                 func = self.client.embeddings.create
                 if asyncio.iscoroutinefunction(func):
                     resp = await func(input=text, model=self.model_name)
@@ -451,7 +499,9 @@ class OpenAIEmbedder:
                 if hasattr(resp, "data") and len(resp.data) > 0:
                     embedding_val = resp.data[0].embedding
                     return [float(x) for x in embedding_val]
-            raise ValueError("Provided client does not have embeddings.create method or expected structure.")
+            raise ValueError(
+                "Provided client does not have embeddings.create method or expected structure."
+            )
 
         if not self.api_key:
             raise ValueError(
@@ -463,12 +513,12 @@ class OpenAIEmbedder:
             "input": text,
             "model": self.model_name,
         }
-        
+
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
         }
-        
+
         try:
             import httpx
         except ImportError:
@@ -479,18 +529,22 @@ class OpenAIEmbedder:
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as httpx_client:
-                response = await httpx_client.post(
-                    url,
-                    json=payload,
-                    headers=headers
-                )
+                response = await httpx_client.post(url, json=payload, headers=headers)
                 response.raise_for_status()
                 resp_data = response.json()
-                if "data" in resp_data and len(resp_data["data"]) > 0 and "embedding" in resp_data["data"][0]:
+                if (
+                    "data" in resp_data
+                    and len(resp_data["data"]) > 0
+                    and "embedding" in resp_data["data"][0]
+                ):
                     return [float(x) for x in resp_data["data"][0]["embedding"]]
-                raise ValueError(f"Unexpected response structure from OpenAI API: {resp_data}")
+                raise ValueError(
+                    f"Unexpected response structure from OpenAI API: {resp_data}"
+                )
         except httpx.HTTPStatusError as e:
-            raise RuntimeError(f"OpenAI API request failed with status {e.response.status_code}: {e.response.text}") from e
+            raise RuntimeError(
+                f"OpenAI API request failed with status {e.response.status_code}: {e.response.text}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with OpenAI API: {e}") from e
 
@@ -498,12 +552,18 @@ class OpenAIEmbedder:
         if not texts:
             return []
         if self.client is not None:
-            if hasattr(self.client, "embeddings") and hasattr(self.client.embeddings, "create"):
+            if hasattr(self.client, "embeddings") and hasattr(
+                self.client.embeddings, "create"
+            ):
                 resp = self.client.embeddings.create(input=texts, model=self.model_name)
                 if hasattr(resp, "data"):
-                    sorted_data = sorted(resp.data, key=lambda x: getattr(x, "index", 0))
+                    sorted_data = sorted(
+                        resp.data, key=lambda x: getattr(x, "index", 0)
+                    )
                     return [[float(x) for x in item.embedding] for item in sorted_data]
-            raise ValueError("Provided client does not have embeddings.create method or expected structure.")
+            raise ValueError(
+                "Provided client does not have embeddings.create method or expected structure."
+            )
 
         if not self.api_key:
             raise ValueError(
@@ -529,12 +589,20 @@ class OpenAIEmbedder:
             with urllib.request.urlopen(req, timeout=30) as response:
                 resp_data = json.loads(response.read().decode("utf-8"))
                 if "data" in resp_data:
-                    sorted_data = sorted(resp_data["data"], key=lambda x: x.get("index", 0))
-                    return [[float(x) for x in item["embedding"]] for item in sorted_data]
-                raise ValueError(f"Unexpected response structure from OpenAI API: {resp_data}")
+                    sorted_data = sorted(
+                        resp_data["data"], key=lambda x: x.get("index", 0)
+                    )
+                    return [
+                        [float(x) for x in item["embedding"]] for item in sorted_data
+                    ]
+                raise ValueError(
+                    f"Unexpected response structure from OpenAI API: {resp_data}"
+                )
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8")
-            raise RuntimeError(f"OpenAI API request failed with status {e.code}: {err_body}") from e
+            raise RuntimeError(
+                f"OpenAI API request failed with status {e.code}: {err_body}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with OpenAI API: {e}") from e
 
@@ -542,16 +610,22 @@ class OpenAIEmbedder:
         if not texts:
             return []
         if self.client is not None:
-            if hasattr(self.client, "embeddings") and hasattr(self.client.embeddings, "create"):
+            if hasattr(self.client, "embeddings") and hasattr(
+                self.client.embeddings, "create"
+            ):
                 func = self.client.embeddings.create
                 if asyncio.iscoroutinefunction(func):
                     resp = await func(input=texts, model=self.model_name)
                 else:
                     resp = func(input=texts, model=self.model_name)
                 if hasattr(resp, "data"):
-                    sorted_data = sorted(resp.data, key=lambda x: getattr(x, "index", 0))
+                    sorted_data = sorted(
+                        resp.data, key=lambda x: getattr(x, "index", 0)
+                    )
                     return [[float(x) for x in item.embedding] for item in sorted_data]
-            raise ValueError("Provided client does not have embeddings.create method or expected structure.")
+            raise ValueError(
+                "Provided client does not have embeddings.create method or expected structure."
+            )
 
         if not self.api_key:
             raise ValueError(
@@ -577,22 +651,25 @@ class OpenAIEmbedder:
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as httpx_client:
-                response = await httpx_client.post(
-                    url,
-                    json=payload,
-                    headers=headers
-                )
+                response = await httpx_client.post(url, json=payload, headers=headers)
                 response.raise_for_status()
                 resp_data = response.json()
                 if "data" in resp_data:
-                    sorted_data = sorted(resp_data["data"], key=lambda x: x.get("index", 0))
-                    return [[float(x) for x in item["embedding"]] for item in sorted_data]
-                raise ValueError(f"Unexpected response structure from OpenAI API: {resp_data}")
+                    sorted_data = sorted(
+                        resp_data["data"], key=lambda x: x.get("index", 0)
+                    )
+                    return [
+                        [float(x) for x in item["embedding"]] for item in sorted_data
+                    ]
+                raise ValueError(
+                    f"Unexpected response structure from OpenAI API: {resp_data}"
+                )
         except httpx.HTTPStatusError as e:
-            raise RuntimeError(f"OpenAI API request failed with status {e.response.status_code}: {e.response.text}") from e
+            raise RuntimeError(
+                f"OpenAI API request failed with status {e.response.status_code}: {e.response.text}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with OpenAI API: {e}") from e
-
 
 
 class VectorContextStore:
@@ -638,7 +715,7 @@ class VectorContextStore:
             ref_norm = np.linalg.norm(ref_vec)
             if ref_norm == 0.0:
                 continue
-            
+
             # Cosine similarity calculation
             similarity = float(np.dot(q_vec, ref_vec) / (q_norm * ref_norm))
             if similarity > best_similarity:
@@ -647,14 +724,12 @@ class VectorContextStore:
 
         if best_similarity >= similarity_threshold:
             return best_key
-            
+
         return None
 
     def to_json(self) -> str:
         """Serialize the context store to a JSON string."""
-        serializable = {
-            key: vec.tolist() for key, vec in self._contexts.items()
-        }
+        serializable = {key: vec.tolist() for key, vec in self._contexts.items()}
         return json.dumps(serializable)
 
     @classmethod
@@ -721,6 +796,7 @@ class SQLiteVectorStore:
 
     def add_context(self, context_key: str, vector: Sequence[float]) -> None:
         import sqlite_vec
+
         conn = self._get_conn()
         serialized_vec = sqlite_vec.serialize_float32(list(vector))
         with conn:
@@ -746,14 +822,15 @@ class SQLiteVectorStore:
         self, query_vector: Sequence[float], similarity_threshold: float = 0.8
     ) -> Optional[str]:
         import sqlite_vec
+
         conn = self._get_conn()
         serialized_query = sqlite_vec.serialize_float32(list(query_vector))
         cursor = conn.cursor()
-        
+
         # Cosine distance = 1.0 - similarity.
         # similarity >= similarity_threshold => 1.0 - distance >= similarity_threshold => distance <= 1.0 - similarity_threshold.
         max_distance = 1.0 - similarity_threshold
-        
+
         cursor.execute(
             f"SELECT context_key, distance FROM {self.table_name} "
             f"WHERE embedding MATCH ? "
@@ -778,6 +855,7 @@ class SQLiteVectorStore:
         row = cursor.fetchone()
         if row:
             import sqlite_vec
+
             return sqlite_vec.deserialize_float32(row[0])
         return None
 
@@ -848,7 +926,7 @@ class AsyncVectorContextStore:
                 ref_norm = np.linalg.norm(ref_vec)
                 if ref_norm == 0.0:
                     continue
-                
+
                 similarity = float(np.dot(q_vec, ref_vec) / (q_norm * ref_norm))
                 if similarity > best_similarity:
                     best_similarity = similarity
@@ -856,13 +934,11 @@ class AsyncVectorContextStore:
 
             if best_similarity >= similarity_threshold:
                 return best_key
-                
+
             return None
 
     def to_json(self) -> str:
-        serializable = {
-            key: vec.tolist() for key, vec in self._contexts.items()
-        }
+        serializable = {key: vec.tolist() for key, vec in self._contexts.items()}
         return json.dumps(serializable)
 
     @classmethod
@@ -909,7 +985,7 @@ class AsyncSQLiteVectorStore:
                 await self._conn.enable_load_extension(True)
                 await self._conn.load_extension(sqlite_vec.loadable_path())
                 await self._conn.enable_load_extension(False)
-                
+
                 await self._conn.execute(
                     f"CREATE VIRTUAL TABLE IF NOT EXISTS {self.table_name} USING vec0("
                     f"context_key TEXT,"
@@ -921,6 +997,7 @@ class AsyncSQLiteVectorStore:
 
     async def aadd_context(self, context_key: str, vector: Sequence[float]) -> None:
         import sqlite_vec
+
         conn = await self._get_conn()
         serialized_vec = sqlite_vec.serialize_float32(list(vector))
         async with self._lock:
@@ -946,10 +1023,11 @@ class AsyncSQLiteVectorStore:
         self, query_vector: Sequence[float], similarity_threshold: float = 0.8
     ) -> Optional[str]:
         import sqlite_vec
+
         conn = await self._get_conn()
         serialized_query = sqlite_vec.serialize_float32(list(query_vector))
         max_distance = 1.0 - similarity_threshold
-        
+
         async with self._lock:
             async with conn.execute(
                 f"SELECT context_key, distance FROM {self.table_name} "
@@ -959,7 +1037,7 @@ class AsyncSQLiteVectorStore:
                 (serialized_query,),
             ) as cursor:
                 row = await cursor.fetchone()
-        
+
         if row:
             matched_key, distance = row[0], float(row[1])
             if distance <= max_distance:
@@ -976,6 +1054,7 @@ class AsyncSQLiteVectorStore:
                 row = await cursor.fetchone()
         if row:
             import sqlite_vec
+
             return sqlite_vec.deserialize_float32(row[0])
         return None
 
@@ -1000,17 +1079,25 @@ class AnthropicEmbedder:
         client: Optional[Any] = None,
     ) -> None:
         self.model_name = model_name
-        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("VOYAGE_API_KEY")
+        self.api_key = (
+            api_key
+            or os.environ.get("ANTHROPIC_API_KEY")
+            or os.environ.get("VOYAGE_API_KEY")
+        )
         self.base_url = base_url.rstrip("/")
         self.client = client
 
     def embed_query(self, text: str) -> Sequence[float]:
         if self.client is not None:
             if hasattr(self.client, "embed"):
-                resp = self.client.embed([text], model=self.model_name, input_type="query")
+                resp = self.client.embed(
+                    [text], model=self.model_name, input_type="query"
+                )
                 if hasattr(resp, "embeddings") and len(resp.embeddings) > 0:
                     return [float(x) for x in resp.embeddings[0]]
-            raise ValueError("Provided client does not have embed method or expected structure.")
+            raise ValueError(
+                "Provided client does not have embed method or expected structure."
+            )
 
         if not self.api_key:
             raise ValueError(
@@ -1023,7 +1110,7 @@ class AnthropicEmbedder:
             "model": self.model_name,
             "input_type": "query",
         }
-        
+
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
@@ -1033,16 +1120,24 @@ class AnthropicEmbedder:
             },
             method="POST",
         )
-        
+
         try:
             with urllib.request.urlopen(req, timeout=30) as response:
                 resp_data = json.loads(response.read().decode("utf-8"))
-                if "data" in resp_data and len(resp_data["data"]) > 0 and "embedding" in resp_data["data"][0]:
+                if (
+                    "data" in resp_data
+                    and len(resp_data["data"]) > 0
+                    and "embedding" in resp_data["data"][0]
+                ):
                     return [float(x) for x in resp_data["data"][0]["embedding"]]
-                raise ValueError(f"Unexpected response structure from Voyage API: {resp_data}")
+                raise ValueError(
+                    f"Unexpected response structure from Voyage API: {resp_data}"
+                )
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8")
-            raise RuntimeError(f"Voyage API request failed with status {e.code}: {err_body}") from e
+            raise RuntimeError(
+                f"Voyage API request failed with status {e.code}: {err_body}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with Voyage API: {e}") from e
 
@@ -1056,7 +1151,9 @@ class AnthropicEmbedder:
                     resp = func([text], model=self.model_name, input_type="query")
                 if hasattr(resp, "embeddings") and len(resp.embeddings) > 0:
                     return [float(x) for x in resp.embeddings[0]]
-            raise ValueError("Provided client does not have embed method or expected structure.")
+            raise ValueError(
+                "Provided client does not have embed method or expected structure."
+            )
 
         if not self.api_key:
             raise ValueError(
@@ -1069,7 +1166,7 @@ class AnthropicEmbedder:
             "model": self.model_name,
             "input_type": "query",
         }
-        
+
         try:
             import httpx
         except ImportError:
@@ -1086,15 +1183,23 @@ class AnthropicEmbedder:
                     headers={
                         "Content-Type": "application/json",
                         "Authorization": f"Bearer {self.api_key}",
-                    }
+                    },
                 )
                 response.raise_for_status()
                 resp_data = response.json()
-                if "data" in resp_data and len(resp_data["data"]) > 0 and "embedding" in resp_data["data"][0]:
+                if (
+                    "data" in resp_data
+                    and len(resp_data["data"]) > 0
+                    and "embedding" in resp_data["data"][0]
+                ):
                     return [float(x) for x in resp_data["data"][0]["embedding"]]
-                raise ValueError(f"Unexpected response structure from Voyage API: {resp_data}")
+                raise ValueError(
+                    f"Unexpected response structure from Voyage API: {resp_data}"
+                )
         except httpx.HTTPStatusError as e:
-            raise RuntimeError(f"Voyage API request failed with status {e.response.status_code}: {e.response.text}") from e
+            raise RuntimeError(
+                f"Voyage API request failed with status {e.response.status_code}: {e.response.text}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with Voyage API: {e}") from e
 
@@ -1103,10 +1208,14 @@ class AnthropicEmbedder:
             return []
         if self.client is not None:
             if hasattr(self.client, "embed"):
-                resp = self.client.embed(texts, model=self.model_name, input_type="document")
+                resp = self.client.embed(
+                    texts, model=self.model_name, input_type="document"
+                )
                 if hasattr(resp, "embeddings"):
                     return [[float(x) for x in emb] for emb in resp.embeddings]
-            raise ValueError("Provided client does not have embed method or expected structure.")
+            raise ValueError(
+                "Provided client does not have embed method or expected structure."
+            )
 
         if not self.api_key:
             raise ValueError(
@@ -1119,7 +1228,7 @@ class AnthropicEmbedder:
             "model": self.model_name,
             "input_type": "document",
         }
-        
+
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
@@ -1129,17 +1238,25 @@ class AnthropicEmbedder:
             },
             method="POST",
         )
-        
+
         try:
             with urllib.request.urlopen(req, timeout=30) as response:
                 resp_data = json.loads(response.read().decode("utf-8"))
                 if "data" in resp_data:
-                    sorted_data = sorted(resp_data["data"], key=lambda x: x.get("index", 0))
-                    return [[float(x) for x in item["embedding"]] for item in sorted_data]
-                raise ValueError(f"Unexpected response structure from Voyage API: {resp_data}")
+                    sorted_data = sorted(
+                        resp_data["data"], key=lambda x: x.get("index", 0)
+                    )
+                    return [
+                        [float(x) for x in item["embedding"]] for item in sorted_data
+                    ]
+                raise ValueError(
+                    f"Unexpected response structure from Voyage API: {resp_data}"
+                )
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8")
-            raise RuntimeError(f"Voyage API request failed with status {e.code}: {err_body}") from e
+            raise RuntimeError(
+                f"Voyage API request failed with status {e.code}: {err_body}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with Voyage API: {e}") from e
 
@@ -1150,12 +1267,16 @@ class AnthropicEmbedder:
             if hasattr(self.client, "embed"):
                 func = self.client.embed
                 if asyncio.iscoroutinefunction(func):
-                    resp = await func(texts, model=self.model_name, input_type="document")
+                    resp = await func(
+                        texts, model=self.model_name, input_type="document"
+                    )
                 else:
                     resp = func(texts, model=self.model_name, input_type="document")
                 if hasattr(resp, "embeddings"):
                     return [[float(x) for x in emb] for emb in resp.embeddings]
-            raise ValueError("Provided client does not have embed method or expected structure.")
+            raise ValueError(
+                "Provided client does not have embed method or expected structure."
+            )
 
         if not self.api_key:
             raise ValueError(
@@ -1168,7 +1289,7 @@ class AnthropicEmbedder:
             "model": self.model_name,
             "input_type": "document",
         }
-        
+
         try:
             import httpx
         except ImportError:
@@ -1185,16 +1306,24 @@ class AnthropicEmbedder:
                     headers={
                         "Content-Type": "application/json",
                         "Authorization": f"Bearer {self.api_key}",
-                    }
+                    },
                 )
                 response.raise_for_status()
                 resp_data = response.json()
                 if "data" in resp_data:
-                    sorted_data = sorted(resp_data["data"], key=lambda x: x.get("index", 0))
-                    return [[float(x) for x in item["embedding"]] for item in sorted_data]
-                raise ValueError(f"Unexpected response structure from Voyage API: {resp_data}")
+                    sorted_data = sorted(
+                        resp_data["data"], key=lambda x: x.get("index", 0)
+                    )
+                    return [
+                        [float(x) for x in item["embedding"]] for item in sorted_data
+                    ]
+                raise ValueError(
+                    f"Unexpected response structure from Voyage API: {resp_data}"
+                )
         except httpx.HTTPStatusError as e:
-            raise RuntimeError(f"Voyage API request failed with status {e.response.status_code}: {e.response.text}") from e
+            raise RuntimeError(
+                f"Voyage API request failed with status {e.response.status_code}: {e.response.text}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with Voyage API: {e}") from e
 
@@ -1227,7 +1356,11 @@ class CohereEmbedder:
                         input_type="search_query",
                         embedding_types=["float"],
                     )
-                    if hasattr(resp, "embeddings") and hasattr(resp.embeddings, "float") and len(resp.embeddings.float) > 0:
+                    if (
+                        hasattr(resp, "embeddings")
+                        and hasattr(resp.embeddings, "float")
+                        and len(resp.embeddings.float) > 0
+                    ):
                         return [float(x) for x in resp.embeddings.float[0]]
                 except Exception:
                     resp = self.client.embed(
@@ -1237,7 +1370,9 @@ class CohereEmbedder:
                     )
                     if hasattr(resp, "embeddings") and len(resp.embeddings) > 0:
                         return [float(x) for x in resp.embeddings[0]]
-            raise ValueError("Provided client does not have embed method or expected structure.")
+            raise ValueError(
+                "Provided client does not have embed method or expected structure."
+            )
 
         if not self.api_key:
             raise ValueError(
@@ -1251,7 +1386,7 @@ class CohereEmbedder:
             "input_type": "search_query",
             "embedding_types": ["float"],
         }
-        
+
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
@@ -1261,18 +1396,26 @@ class CohereEmbedder:
             },
             method="POST",
         )
-        
+
         try:
             with urllib.request.urlopen(req, timeout=30) as response:
                 resp_data = json.loads(response.read().decode("utf-8"))
-                if "embeddings" in resp_data and "float" in resp_data["embeddings"] and len(resp_data["embeddings"]["float"]) > 0:
+                if (
+                    "embeddings" in resp_data
+                    and "float" in resp_data["embeddings"]
+                    and len(resp_data["embeddings"]["float"]) > 0
+                ):
                     return [float(x) for x in resp_data["embeddings"]["float"][0]]
                 if "embeddings" in resp_data and len(resp_data["embeddings"]) > 0:
                     return [float(x) for x in resp_data["embeddings"][0]]
-                raise ValueError(f"Unexpected response structure from Cohere API: {resp_data}")
+                raise ValueError(
+                    f"Unexpected response structure from Cohere API: {resp_data}"
+                )
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8")
-            raise RuntimeError(f"Cohere API request failed with status {e.code}: {err_body}") from e
+            raise RuntimeError(
+                f"Cohere API request failed with status {e.code}: {err_body}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with Cohere API: {e}") from e
 
@@ -1295,7 +1438,11 @@ class CohereEmbedder:
                             input_type="search_query",
                             embedding_types=["float"],
                         )
-                    if hasattr(resp, "embeddings") and hasattr(resp.embeddings, "float") and len(resp.embeddings.float) > 0:
+                    if (
+                        hasattr(resp, "embeddings")
+                        and hasattr(resp.embeddings, "float")
+                        and len(resp.embeddings.float) > 0
+                    ):
                         return [float(x) for x in resp.embeddings.float[0]]
                 except Exception:
                     if asyncio.iscoroutinefunction(func):
@@ -1312,7 +1459,9 @@ class CohereEmbedder:
                         )
                     if hasattr(resp, "embeddings") and len(resp.embeddings) > 0:
                         return [float(x) for x in resp.embeddings[0]]
-            raise ValueError("Provided client does not have embed method or expected structure.")
+            raise ValueError(
+                "Provided client does not have embed method or expected structure."
+            )
 
         if not self.api_key:
             raise ValueError(
@@ -1326,7 +1475,7 @@ class CohereEmbedder:
             "input_type": "search_query",
             "embedding_types": ["float"],
         }
-        
+
         try:
             import httpx
         except ImportError:
@@ -1343,17 +1492,25 @@ class CohereEmbedder:
                     headers={
                         "Content-Type": "application/json",
                         "Authorization": f"Bearer {self.api_key}",
-                    }
+                    },
                 )
                 response.raise_for_status()
                 resp_data = response.json()
-                if "embeddings" in resp_data and "float" in resp_data["embeddings"] and len(resp_data["embeddings"]["float"]) > 0:
+                if (
+                    "embeddings" in resp_data
+                    and "float" in resp_data["embeddings"]
+                    and len(resp_data["embeddings"]["float"]) > 0
+                ):
                     return [float(x) for x in resp_data["embeddings"]["float"][0]]
                 if "embeddings" in resp_data and len(resp_data["embeddings"]) > 0:
                     return [float(x) for x in resp_data["embeddings"][0]]
-                raise ValueError(f"Unexpected response structure from Cohere API: {resp_data}")
+                raise ValueError(
+                    f"Unexpected response structure from Cohere API: {resp_data}"
+                )
         except httpx.HTTPStatusError as e:
-            raise RuntimeError(f"Cohere API request failed with status {e.response.status_code}: {e.response.text}") from e
+            raise RuntimeError(
+                f"Cohere API request failed with status {e.response.status_code}: {e.response.text}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with Cohere API: {e}") from e
 
@@ -1369,8 +1526,12 @@ class CohereEmbedder:
                         input_type="search_document",
                         embedding_types=["float"],
                     )
-                    if hasattr(resp, "embeddings") and hasattr(resp.embeddings, "float"):
-                        return [[float(x) for x in emb] for emb in resp.embeddings.float]
+                    if hasattr(resp, "embeddings") and hasattr(
+                        resp.embeddings, "float"
+                    ):
+                        return [
+                            [float(x) for x in emb] for emb in resp.embeddings.float
+                        ]
                 except Exception:
                     resp = self.client.embed(
                         texts=texts,
@@ -1379,7 +1540,9 @@ class CohereEmbedder:
                     )
                     if hasattr(resp, "embeddings"):
                         return [[float(x) for x in emb] for emb in resp.embeddings]
-            raise ValueError("Provided client does not have embed method or expected structure.")
+            raise ValueError(
+                "Provided client does not have embed method or expected structure."
+            )
 
         if not self.api_key:
             raise ValueError(
@@ -1393,7 +1556,7 @@ class CohereEmbedder:
             "input_type": "search_document",
             "embedding_types": ["float"],
         }
-        
+
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
@@ -1403,18 +1566,25 @@ class CohereEmbedder:
             },
             method="POST",
         )
-        
+
         try:
             with urllib.request.urlopen(req, timeout=30) as response:
                 resp_data = json.loads(response.read().decode("utf-8"))
                 if "embeddings" in resp_data and "float" in resp_data["embeddings"]:
-                    return [[float(x) for x in emb] for emb in resp_data["embeddings"]["float"]]
+                    return [
+                        [float(x) for x in emb]
+                        for emb in resp_data["embeddings"]["float"]
+                    ]
                 if "embeddings" in resp_data:
                     return [[float(x) for x in emb] for emb in resp_data["embeddings"]]
-                raise ValueError(f"Unexpected response structure from Cohere API: {resp_data}")
+                raise ValueError(
+                    f"Unexpected response structure from Cohere API: {resp_data}"
+                )
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8")
-            raise RuntimeError(f"Cohere API request failed with status {e.code}: {err_body}") from e
+            raise RuntimeError(
+                f"Cohere API request failed with status {e.code}: {err_body}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with Cohere API: {e}") from e
 
@@ -1439,8 +1609,12 @@ class CohereEmbedder:
                             input_type="search_document",
                             embedding_types=["float"],
                         )
-                    if hasattr(resp, "embeddings") and hasattr(resp.embeddings, "float"):
-                        return [[float(x) for x in emb] for emb in resp.embeddings.float]
+                    if hasattr(resp, "embeddings") and hasattr(
+                        resp.embeddings, "float"
+                    ):
+                        return [
+                            [float(x) for x in emb] for emb in resp.embeddings.float
+                        ]
                 except Exception:
                     if asyncio.iscoroutinefunction(func):
                         resp = await func(
@@ -1456,7 +1630,9 @@ class CohereEmbedder:
                         )
                     if hasattr(resp, "embeddings"):
                         return [[float(x) for x in emb] for emb in resp.embeddings]
-            raise ValueError("Provided client does not have embed method or expected structure.")
+            raise ValueError(
+                "Provided client does not have embed method or expected structure."
+            )
 
         if not self.api_key:
             raise ValueError(
@@ -1470,7 +1646,7 @@ class CohereEmbedder:
             "input_type": "search_document",
             "embedding_types": ["float"],
         }
-        
+
         try:
             import httpx
         except ImportError:
@@ -1487,17 +1663,24 @@ class CohereEmbedder:
                     headers={
                         "Content-Type": "application/json",
                         "Authorization": f"Bearer {self.api_key}",
-                    }
+                    },
                 )
                 response.raise_for_status()
                 resp_data = response.json()
                 if "embeddings" in resp_data and "float" in resp_data["embeddings"]:
-                    return [[float(x) for x in emb] for emb in resp_data["embeddings"]["float"]]
+                    return [
+                        [float(x) for x in emb]
+                        for emb in resp_data["embeddings"]["float"]
+                    ]
                 if "embeddings" in resp_data:
                     return [[float(x) for x in emb] for emb in resp_data["embeddings"]]
-                raise ValueError(f"Unexpected response structure from Cohere API: {resp_data}")
+                raise ValueError(
+                    f"Unexpected response structure from Cohere API: {resp_data}"
+                )
         except httpx.HTTPStatusError as e:
-            raise RuntimeError(f"Cohere API request failed with status {e.response.status_code}: {e.response.text}") from e
+            raise RuntimeError(
+                f"Cohere API request failed with status {e.response.status_code}: {e.response.text}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with Cohere API: {e}") from e
 
@@ -1523,7 +1706,7 @@ class LlamaCppEmbedder:
         if base.endswith("/v1"):
             base = base[:-3]
         url = f"{base}/embedding"
-        
+
         embeddings = []
         for text in texts:
             payload = {"content": text}
@@ -1538,7 +1721,9 @@ class LlamaCppEmbedder:
                 if "embedding" in resp_data:
                     embeddings.append([float(x) for x in resp_data["embedding"]])
                 else:
-                    raise ValueError(f"Unexpected response structure from llama.cpp API: {resp_data}")
+                    raise ValueError(
+                        f"Unexpected response structure from llama.cpp API: {resp_data}"
+                    )
         return embeddings
 
     def embed_query(self, text: str) -> Sequence[float]:
@@ -1560,9 +1745,15 @@ class LlamaCppEmbedder:
         try:
             with urllib.request.urlopen(req, timeout=30) as response:
                 resp_data = json.loads(response.read().decode("utf-8"))
-                if "data" in resp_data and len(resp_data["data"]) > 0 and "embedding" in resp_data["data"][0]:
+                if (
+                    "data" in resp_data
+                    and len(resp_data["data"]) > 0
+                    and "embedding" in resp_data["data"][0]
+                ):
                     return [float(x) for x in resp_data["data"][0]["embedding"]]
-                raise ValueError(f"Unexpected response structure from llama.cpp API: {resp_data}")
+                raise ValueError(
+                    f"Unexpected response structure from llama.cpp API: {resp_data}"
+                )
         except urllib.error.HTTPError as e:
             try:
                 fallback_results = self._call_raw_fallback([text])
@@ -1571,7 +1762,9 @@ class LlamaCppEmbedder:
             except Exception:
                 pass
             err_body = e.read().decode("utf-8")
-            raise RuntimeError(f"llama.cpp API request failed with status {e.code}: {err_body}") from e
+            raise RuntimeError(
+                f"llama.cpp API request failed with status {e.code}: {err_body}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with llama.cpp API: {e}") from e
 
@@ -1588,21 +1781,23 @@ class LlamaCppEmbedder:
         if base.endswith("/v1"):
             base = base[:-3]
         url = f"{base}/embedding"
-        
+
         embeddings = []
         async with httpx.AsyncClient(timeout=30.0) as httpx_client:
             for text in texts:
                 response = await httpx_client.post(
                     url,
                     json={"content": text},
-                    headers={"Content-Type": "application/json"}
+                    headers={"Content-Type": "application/json"},
                 )
                 response.raise_for_status()
                 resp_data = response.json()
                 if "embedding" in resp_data:
                     embeddings.append([float(x) for x in resp_data["embedding"]])
                 else:
-                    raise ValueError(f"Unexpected response structure from llama.cpp API: {resp_data}")
+                    raise ValueError(
+                        f"Unexpected response structure from llama.cpp API: {resp_data}"
+                    )
         return embeddings
 
     async def aembed_query(self, text: str) -> Sequence[float]:
@@ -1625,16 +1820,18 @@ class LlamaCppEmbedder:
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as httpx_client:
-                response = await httpx_client.post(
-                    url,
-                    json=payload,
-                    headers=headers
-                )
+                response = await httpx_client.post(url, json=payload, headers=headers)
                 response.raise_for_status()
                 resp_data = response.json()
-                if "data" in resp_data and len(resp_data["data"]) > 0 and "embedding" in resp_data["data"][0]:
+                if (
+                    "data" in resp_data
+                    and len(resp_data["data"]) > 0
+                    and "embedding" in resp_data["data"][0]
+                ):
                     return [float(x) for x in resp_data["data"][0]["embedding"]]
-                raise ValueError(f"Unexpected response structure from llama.cpp API: {resp_data}")
+                raise ValueError(
+                    f"Unexpected response structure from llama.cpp API: {resp_data}"
+                )
         except httpx.HTTPStatusError as e:
             try:
                 fallback_results = await self._acall_raw_fallback([text])
@@ -1642,7 +1839,9 @@ class LlamaCppEmbedder:
                     return fallback_results[0]
             except Exception:
                 pass
-            raise RuntimeError(f"llama.cpp API request failed with status {e.response.status_code}: {e.response.text}") from e
+            raise RuntimeError(
+                f"llama.cpp API request failed with status {e.response.status_code}: {e.response.text}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with llama.cpp API: {e}") from e
 
@@ -1668,16 +1867,24 @@ class LlamaCppEmbedder:
             with urllib.request.urlopen(req, timeout=30) as response:
                 resp_data = json.loads(response.read().decode("utf-8"))
                 if "data" in resp_data:
-                    sorted_data = sorted(resp_data["data"], key=lambda x: x.get("index", 0))
-                    return [[float(x) for x in item["embedding"]] for item in sorted_data]
-                raise ValueError(f"Unexpected response structure from llama.cpp API: {resp_data}")
+                    sorted_data = sorted(
+                        resp_data["data"], key=lambda x: x.get("index", 0)
+                    )
+                    return [
+                        [float(x) for x in item["embedding"]] for item in sorted_data
+                    ]
+                raise ValueError(
+                    f"Unexpected response structure from llama.cpp API: {resp_data}"
+                )
         except urllib.error.HTTPError as e:
             try:
                 return self._call_raw_fallback(texts)
             except Exception:
                 pass
             err_body = e.read().decode("utf-8")
-            raise RuntimeError(f"llama.cpp API request failed with status {e.code}: {err_body}") from e
+            raise RuntimeError(
+                f"llama.cpp API request failed with status {e.code}: {err_body}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with llama.cpp API: {e}") from e
 
@@ -1703,23 +1910,26 @@ class LlamaCppEmbedder:
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as httpx_client:
-                response = await httpx_client.post(
-                    url,
-                    json=payload,
-                    headers=headers
-                )
+                response = await httpx_client.post(url, json=payload, headers=headers)
                 response.raise_for_status()
                 resp_data = response.json()
                 if "data" in resp_data:
-                    sorted_data = sorted(resp_data["data"], key=lambda x: x.get("index", 0))
-                    return [[float(x) for x in item["embedding"]] for item in sorted_data]
-                raise ValueError(f"Unexpected response structure from llama.cpp API: {resp_data}")
+                    sorted_data = sorted(
+                        resp_data["data"], key=lambda x: x.get("index", 0)
+                    )
+                    return [
+                        [float(x) for x in item["embedding"]] for item in sorted_data
+                    ]
+                raise ValueError(
+                    f"Unexpected response structure from llama.cpp API: {resp_data}"
+                )
         except httpx.HTTPStatusError as e:
             try:
                 return await self._acall_raw_fallback(texts)
             except Exception:
                 pass
-            raise RuntimeError(f"llama.cpp API request failed with status {e.response.status_code}: {e.response.text}") from e
+            raise RuntimeError(
+                f"llama.cpp API request failed with status {e.response.status_code}: {e.response.text}"
+            ) from e
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with llama.cpp API: {e}") from e
-

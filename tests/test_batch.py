@@ -1,26 +1,22 @@
-import asyncio
 import os
 import tempfile
-import json
-from unittest.mock import MagicMock, AsyncMock
-import pytest
-import numpy as np
+from unittest.mock import AsyncMock, MagicMock
 
+import numpy as np
+import pytest
+
+from bayesian_cortex.router import AsyncBayesianRouter, BayesianRouter
 from bayesian_cortex.storage import (
-    InMemoryStorage,
-    SQLiteStorage,
-    RedisStorage,
-    AsyncInMemoryStorage,
-    AsyncSQLiteStorage,
     AsyncRedisStorage,
+    AsyncSQLiteStorage,
+    RedisStorage,
+    SQLiteStorage,
 )
-from bayesian_cortex.embeddings import LocalSentenceTransformerEmbedder
-from bayesian_cortex.router import BayesianRouter, AsyncBayesianRouter
 
 
 def test_in_memory_storage_batch(mem_storage):
     storage = mem_storage
-    
+
     # Batch updates
     params = {
         ("ctx_1", "tool_a"): (3.0, 4.0),
@@ -28,14 +24,19 @@ def test_in_memory_storage_batch(mem_storage):
         ("ctx_2", "tool_a"): (7.0, 8.0),
     }
     storage.update_candidate_params_batch(params)
-    
+
     # Batch retrieval
-    keys = [("ctx_1", "tool_a"), ("ctx_1", "tool_b"), ("ctx_2", "tool_a"), ("ctx_2", "tool_b")]
+    keys = [
+        ("ctx_1", "tool_a"),
+        ("ctx_1", "tool_b"),
+        ("ctx_2", "tool_a"),
+        ("ctx_2", "tool_b"),
+    ]
     res = storage.get_candidate_params_batch(keys)
     assert res[("ctx_1", "tool_a")] == (3.0, 4.0)
     assert res[("ctx_1", "tool_b")] == (5.0, 6.0)
     assert res[("ctx_2", "tool_a")] == (7.0, 8.0)
-    assert res[("ctx_2", "tool_b")] == (1.0, 1.0) # Default fallback
+    assert res[("ctx_2", "tool_b")] == (1.0, 1.0)  # Default fallback
 
     # Batch decay and update
     updates = [
@@ -79,7 +80,7 @@ def test_sqlite_storage_batch():
 
     try:
         storage = SQLiteStorage(db_path)
-        
+
         # Batch updates
         params = {
             ("ctx_1", "tool_a"): (3.0, 4.0),
@@ -88,7 +89,9 @@ def test_sqlite_storage_batch():
         storage.update_candidate_params_batch(params)
 
         # Batch retrieval
-        res = storage.get_candidate_params_batch([("ctx_1", "tool_a"), ("ctx_1", "tool_b"), ("ctx_2", "tool_a")])
+        res = storage.get_candidate_params_batch(
+            [("ctx_1", "tool_a"), ("ctx_1", "tool_b"), ("ctx_2", "tool_a")]
+        )
         assert res[("ctx_1", "tool_a")] == (3.0, 4.0)
         assert res[("ctx_1", "tool_b")] == (5.0, 6.0)
         assert res[("ctx_2", "tool_a")] == (1.0, 1.0)
@@ -121,7 +124,7 @@ async def test_async_sqlite_storage_batch():
 
     try:
         storage = AsyncSQLiteStorage(db_path)
-        
+
         # Batch updates
         params = {
             ("ctx_1", "tool_a"): (3.0, 4.0),
@@ -130,7 +133,9 @@ async def test_async_sqlite_storage_batch():
         await storage.update_candidate_params_batch(params)
 
         # Batch retrieval
-        res = await storage.get_candidate_params_batch([("ctx_1", "tool_a"), ("ctx_1", "tool_b"), ("ctx_2", "tool_a")])
+        res = await storage.get_candidate_params_batch(
+            [("ctx_1", "tool_a"), ("ctx_1", "tool_b"), ("ctx_2", "tool_a")]
+        )
         assert res[("ctx_1", "tool_a")] == (3.0, 4.0)
         assert res[("ctx_1", "tool_b")] == (5.0, 6.0)
         assert res[("ctx_2", "tool_a")] == (1.0, 1.0)
@@ -160,9 +165,9 @@ def test_redis_storage_batch():
     mock_client = MagicMock()
     mock_pipeline = MagicMock()
     mock_client.pipeline.return_value = mock_pipeline
-    
+
     storage = RedisStorage(mock_client)
-    
+
     # 1. get_candidate_params_batch
     mock_pipeline.execute.return_value = [b"3.5", b"4.5", None, None]
     keys = [("ctx_1", "tool_a"), ("ctx_2", "tool_b")]
@@ -181,7 +186,7 @@ def test_redis_storage_batch():
     mock_pipeline.reset_mock()
     mock_script = MagicMock()
     storage._script = mock_script
-    
+
     mock_pipeline.execute.return_value = [["2.5", "3.5"]]
     updates = [("ctx_1", "tool_a", 0.9, 1.0)]
     res_decay = storage.decay_and_update_batch(updates)
@@ -195,14 +200,14 @@ async def test_async_redis_storage_batch():
     mock_client = MagicMock()
     mock_pipeline = AsyncMock()
     mock_client.pipeline.return_value = mock_pipeline
-    
+
     # We must mock register_script as returning an AsyncMock script
     mock_script = AsyncMock()
     mock_client.register_script.return_value = mock_script
 
     storage = AsyncRedisStorage(mock_client)
     storage._script = mock_script
-    
+
     # 1. get_candidate_params_batch
     mock_pipeline.hget = MagicMock()
     mock_pipeline.execute.return_value = [b"3.5", b"4.5", None, None]
@@ -222,13 +227,13 @@ async def test_async_redis_storage_batch():
 def test_router_batch_routing_clustering(mem_storage):
     storage = mem_storage
     router = BayesianRouter(storage=storage)
-    
+
     # Set tool priors to force deterministic/seeded behavior
     router.priors = {"tool_a": (10.0, 2.0), "tool_b": (1.0, 10.0)}
-    
+
     contexts = ["hello world", "style clean up", "hello world"]
     candidates = ["tool_a", "tool_b"]
-    
+
     # Batch route
     choices = router.route_batch(contexts, candidates)
     assert len(choices) == 3
@@ -236,19 +241,19 @@ def test_router_batch_routing_clustering(mem_storage):
     # and they should reuse the context keys!
     results_with_trace = router.route_batch_with_trace(contexts, candidates)
     assert len(results_with_trace) == 3
-    
+
     # Check trace 0 and trace 2 use the exact same context key since they have identical context texts
     ctx_0, tool_0 = router._decode_trace_id(results_with_trace[0][1])
     ctx_2, tool_2 = router._decode_trace_id(results_with_trace[2][1])
     assert ctx_0 == ctx_2
-    
+
     # Batch feedback
     feedbacks = [
         {"trace_id": results_with_trace[0][1], "success": True},
         {"trace_id": results_with_trace[1][1], "reward": 0.0},
     ]
     router.feedback_batch(feedbacks)
-    
+
     # Check parameters updated
     alpha, beta = storage.get_candidate_params(ctx_0, tool_0)
     assert alpha > 1.0
@@ -258,20 +263,24 @@ def test_router_batch_routing_clustering(mem_storage):
 async def test_async_router_batch_routing(async_mem_storage):
     storage = async_mem_storage
     router = AsyncBayesianRouter(storage=storage)
-    
+
     router.priors = {"tool_a": (10.0, 2.0), "tool_b": (1.0, 10.0)}
-    
+
     contexts = ["hello world", "style clean up"]
     candidates = ["tool_a", "tool_b"]
-    
+
     choices = await router.aroute_batch(contexts, candidates)
     assert len(choices) == 2
-    
+
     traces = await router.aroute_batch_with_trace(contexts, candidates)
     assert len(traces) == 2
-    
+
     feedbacks = [
         {"trace_id": traces[0][1], "success": True},
-        {"context_text": "style clean up", "candidate_name": "tool_b", "success": False},
+        {
+            "context_text": "style clean up",
+            "candidate_name": "tool_b",
+            "success": False,
+        },
     ]
     await router.afeedback_batch(feedbacks)

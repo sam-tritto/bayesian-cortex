@@ -1,9 +1,9 @@
 import abc
 import asyncio
-from datetime import datetime, timezone
 import json
 import sqlite3
 import threading
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -13,7 +13,9 @@ class BaseStorage(abc.ABC):
     """Abstract base class defining the storage backend interface for BayesianCortex."""
 
     @abc.abstractmethod
-    def get_candidate_params(self, context_key: str, candidate_name: str) -> Tuple[float, float]:
+    def get_candidate_params(
+        self, context_key: str, candidate_name: str
+    ) -> Tuple[float, float]:
         """
         Retrieve the (alpha, beta) posterior parameters for a candidate under a given context.
         Defaults to (1.0, 1.0) if not found.
@@ -156,7 +158,10 @@ class BaseStorage(abc.ABC):
         Batch decay and update parameters in order.
         Each update is (context_key, candidate_name, decay_factor, reward).
         """
-        return [self.decay_and_update(ctx, cand, decay, reward) for ctx, cand, decay, reward in updates]
+        return [
+            self.decay_and_update(ctx, cand, decay, reward)
+            for ctx, cand, decay, reward in updates
+        ]
 
     def get_linear_params_batch(
         self, candidate_names: List[str]
@@ -191,7 +196,9 @@ class BaseStorage(abc.ABC):
             self.save_vector(key, vector)
 
     @abc.abstractmethod
-    def log_selection(self, trace_id: str, context_key: str, candidate_name: str) -> None:
+    def log_selection(
+        self, trace_id: str, context_key: str, candidate_name: str
+    ) -> None:
         """Log a candidate selection event."""
         pass
 
@@ -220,7 +227,9 @@ class InMemoryStorage(BaseStorage):
         self._selection_logs: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
 
-    def get_candidate_params(self, context_key: str, candidate_name: str) -> Tuple[float, float]:
+    def get_candidate_params(
+        self, context_key: str, candidate_name: str
+    ) -> Tuple[float, float]:
         with self._lock:
             return self._data.get((context_key, candidate_name), (1.0, 1.0))
 
@@ -297,7 +306,11 @@ class InMemoryStorage(BaseStorage):
             if val is not None:
                 precision, reward_vector = val
             else:
-                precision = lambda_val * np.ones(d, dtype=np.float32) if diagonal else lambda_val * np.eye(d, dtype=np.float32)
+                precision = (
+                    lambda_val * np.ones(d, dtype=np.float32)
+                    if diagonal
+                    else lambda_val * np.eye(d, dtype=np.float32)
+                )
                 reward_vector = np.zeros(d, dtype=np.float32)
                 reward_vector[-1] = lambda_val * prior_p
 
@@ -305,11 +318,23 @@ class InMemoryStorage(BaseStorage):
             prior_reward_vector[-1] = lambda_val * prior_p
 
             if diagonal:
-                new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32) + (x_augmented ** 2)
+                new_precision = (
+                    decay_factor * precision
+                    + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32)
+                    + (x_augmented**2)
+                )
             else:
-                new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32) + np.outer(x_augmented, x_augmented)
+                new_precision = (
+                    decay_factor * precision
+                    + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32)
+                    + np.outer(x_augmented, x_augmented)
+                )
 
-            new_reward_vector = decay_factor * reward_vector + (1.0 - decay_factor) * prior_reward_vector + reward * x_augmented
+            new_reward_vector = (
+                decay_factor * reward_vector
+                + (1.0 - decay_factor) * prior_reward_vector
+                + reward * x_augmented
+            )
 
             self._linear_data[candidate_name] = (new_precision, new_reward_vector)
             return np.copy(new_precision), np.copy(new_reward_vector)
@@ -356,13 +381,25 @@ class InMemoryStorage(BaseStorage):
     ) -> List[Tuple[np.ndarray, np.ndarray]]:
         with self._lock:
             results = []
-            for candidate_name, decay_factor, reward, x_augmented, lambda_val, prior_p, diagonal in updates:
+            for (
+                candidate_name,
+                decay_factor,
+                reward,
+                x_augmented,
+                lambda_val,
+                prior_p,
+                diagonal,
+            ) in updates:
                 d = len(x_augmented)
                 val = self._linear_data.get(candidate_name)
                 if val is not None:
                     precision, reward_vector = val
                 else:
-                    precision = lambda_val * np.ones(d, dtype=np.float32) if diagonal else lambda_val * np.eye(d, dtype=np.float32)
+                    precision = (
+                        lambda_val * np.ones(d, dtype=np.float32)
+                        if diagonal
+                        else lambda_val * np.eye(d, dtype=np.float32)
+                    )
                     reward_vector = np.zeros(d, dtype=np.float32)
                     reward_vector[-1] = lambda_val * prior_p
 
@@ -370,11 +407,27 @@ class InMemoryStorage(BaseStorage):
                 prior_reward_vector[-1] = lambda_val * prior_p
 
                 if diagonal:
-                    new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32) + (x_augmented ** 2)
+                    new_precision = (
+                        decay_factor * precision
+                        + (1.0 - decay_factor)
+                        * lambda_val
+                        * np.ones(d, dtype=np.float32)
+                        + (x_augmented**2)
+                    )
                 else:
-                    new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32) + np.outer(x_augmented, x_augmented)
+                    new_precision = (
+                        decay_factor * precision
+                        + (1.0 - decay_factor)
+                        * lambda_val
+                        * np.eye(d, dtype=np.float32)
+                        + np.outer(x_augmented, x_augmented)
+                    )
 
-                new_reward_vector = decay_factor * reward_vector + (1.0 - decay_factor) * prior_reward_vector + reward * x_augmented
+                new_reward_vector = (
+                    decay_factor * reward_vector
+                    + (1.0 - decay_factor) * prior_reward_vector
+                    + reward * x_augmented
+                )
 
                 self._linear_data[candidate_name] = (new_precision, new_reward_vector)
                 results.append((np.copy(new_precision), np.copy(new_reward_vector)))
@@ -385,7 +438,9 @@ class InMemoryStorage(BaseStorage):
             for key, vector in vectors.items():
                 self._vectors[key] = list(vector)
 
-    def log_selection(self, trace_id: str, context_key: str, candidate_name: str) -> None:
+    def log_selection(
+        self, trace_id: str, context_key: str, candidate_name: str
+    ) -> None:
         timestamp = datetime.now(timezone.utc).isoformat()
         with self._lock:
             if trace_id not in self._selection_logs:
@@ -420,8 +475,7 @@ class SQLiteStorage(BaseStorage):
         try:
             with conn:
                 self._migrate_database(conn)
-                conn.execute(
-                    """
+                conn.execute("""
                     CREATE TABLE IF NOT EXISTS candidate_params (
                         context_key TEXT,
                         candidate_name TEXT,
@@ -429,35 +483,27 @@ class SQLiteStorage(BaseStorage):
                         beta REAL,
                         PRIMARY KEY (context_key, candidate_name)
                     )
-                    """
-                )
-                conn.execute(
-                    """
+                    """)
+                conn.execute("""
                     CREATE TABLE IF NOT EXISTS metadata (
                         key TEXT PRIMARY KEY,
                         val TEXT
                     )
-                    """
-                )
-                conn.execute(
-                    """
+                    """)
+                conn.execute("""
                     CREATE TABLE IF NOT EXISTS context_vectors (
                         context_key TEXT PRIMARY KEY,
                         vector TEXT
                     )
-                    """
-                )
-                conn.execute(
-                    """
+                    """)
+                conn.execute("""
                     CREATE TABLE IF NOT EXISTS linear_bandit_params (
                         candidate_name TEXT PRIMARY KEY,
                         precision_matrix TEXT,
                         reward_vector TEXT
                     )
-                    """
-                )
-                conn.execute(
-                    """
+                    """)
+                conn.execute("""
                     CREATE TABLE IF NOT EXISTS selection_log (
                         trace_id TEXT PRIMARY KEY,
                         timestamp TEXT,
@@ -465,36 +511,47 @@ class SQLiteStorage(BaseStorage):
                         candidate_name TEXT,
                         reward REAL
                     )
-                    """
-                )
+                    """)
         finally:
             conn.close()
-        
+
         self._local = threading.local()
 
     def _migrate_database(self, conn: sqlite3.Connection) -> None:
         cursor = conn.cursor()
         # Rename table tool_params -> candidate_params
-        cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='tool_params';")
+        cursor.execute(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='tool_params';"
+        )
         if cursor.fetchone()[0] > 0:
             cursor.execute("ALTER TABLE tool_params RENAME TO candidate_params;")
-            cursor.execute("ALTER TABLE candidate_params RENAME COLUMN tool_name TO candidate_name;")
-            
+            cursor.execute(
+                "ALTER TABLE candidate_params RENAME COLUMN tool_name TO candidate_name;"
+            )
+
         # Check linear_bandit_params column tool_name -> candidate_name
-        cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='linear_bandit_params';")
+        cursor.execute(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='linear_bandit_params';"
+        )
         if cursor.fetchone()[0] > 0:
             cursor.execute("PRAGMA table_info(linear_bandit_params);")
             columns = [row[1] for row in cursor.fetchall()]
             if "tool_name" in columns:
-                cursor.execute("ALTER TABLE linear_bandit_params RENAME COLUMN tool_name TO candidate_name;")
-                
+                cursor.execute(
+                    "ALTER TABLE linear_bandit_params RENAME COLUMN tool_name TO candidate_name;"
+                )
+
         # Check selection_log column tool_name -> candidate_name
-        cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='selection_log';")
+        cursor.execute(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='selection_log';"
+        )
         if cursor.fetchone()[0] > 0:
             cursor.execute("PRAGMA table_info(selection_log);")
             columns = [row[1] for row in cursor.fetchall()]
             if "tool_name" in columns:
-                cursor.execute("ALTER TABLE selection_log RENAME COLUMN tool_name TO candidate_name;")
+                cursor.execute(
+                    "ALTER TABLE selection_log RENAME COLUMN tool_name TO candidate_name;"
+                )
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -507,7 +564,9 @@ class SQLiteStorage(BaseStorage):
             self._local.conn = self._connect()
         return self._local.conn
 
-    def get_candidate_params(self, context_key: str, candidate_name: str) -> Tuple[float, float]:
+    def get_candidate_params(
+        self, context_key: str, candidate_name: str
+    ) -> Tuple[float, float]:
         conn = self._get_conn()
         cursor = conn.cursor()
         cursor.execute(
@@ -687,7 +746,11 @@ class SQLiteStorage(BaseStorage):
                 precision = np.array(json.loads(row[0]), dtype=np.float32)
                 reward_vector = np.array(json.loads(row[1]), dtype=np.float32)
             else:
-                precision = lambda_val * np.ones(d, dtype=np.float32) if diagonal else lambda_val * np.eye(d, dtype=np.float32)
+                precision = (
+                    lambda_val * np.ones(d, dtype=np.float32)
+                    if diagonal
+                    else lambda_val * np.eye(d, dtype=np.float32)
+                )
                 reward_vector = np.zeros(d, dtype=np.float32)
                 reward_vector[-1] = lambda_val * prior_p
 
@@ -695,11 +758,23 @@ class SQLiteStorage(BaseStorage):
             prior_reward_vector[-1] = lambda_val * prior_p
 
             if diagonal:
-                new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32) + (x_augmented ** 2)
+                new_precision = (
+                    decay_factor * precision
+                    + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32)
+                    + (x_augmented**2)
+                )
             else:
-                new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32) + np.outer(x_augmented, x_augmented)
+                new_precision = (
+                    decay_factor * precision
+                    + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32)
+                    + np.outer(x_augmented, x_augmented)
+                )
 
-            new_reward_vector = decay_factor * reward_vector + (1.0 - decay_factor) * prior_reward_vector + reward * x_augmented
+            new_reward_vector = (
+                decay_factor * reward_vector
+                + (1.0 - decay_factor) * prior_reward_vector
+                + reward * x_augmented
+            )
 
             cursor.execute(
                 """
@@ -709,7 +784,11 @@ class SQLiteStorage(BaseStorage):
                     precision_matrix = excluded.precision_matrix,
                     reward_vector = excluded.reward_vector
                 """,
-                (candidate_name, json.dumps(new_precision.tolist()), json.dumps(new_reward_vector.tolist())),
+                (
+                    candidate_name,
+                    json.dumps(new_precision.tolist()),
+                    json.dumps(new_reward_vector.tolist()),
+                ),
             )
             conn.commit()
             return new_precision, new_reward_vector
@@ -722,18 +801,21 @@ class SQLiteStorage(BaseStorage):
     ) -> Dict[Tuple[str, str], Tuple[float, float]]:
         if not keys:
             return {}
-        results = {key: (1.0, 1.0) for key in keys}
+        results = dict.fromkeys(keys, (1.0, 1.0))
         conn = self._get_conn()
         cursor = conn.cursor()
         chunk_size = 200
         for i in range(0, len(keys), chunk_size):
-            chunk = keys[i:i+chunk_size]
+            chunk = keys[i : i + chunk_size]
             clauses = []
             params = []
             for c_key, cand_name in chunk:
                 clauses.append("(context_key = ? AND candidate_name = ?)")
                 params.extend([c_key, cand_name])
-            query = "SELECT context_key, candidate_name, alpha, beta FROM candidate_params WHERE " + " OR ".join(clauses)
+            query = (
+                "SELECT context_key, candidate_name, alpha, beta FROM candidate_params WHERE "
+                + " OR ".join(clauses)
+            )
             cursor.execute(query, params)
             for row in cursor.fetchall():
                 results[(row[0], row[1])] = (float(row[2]), float(row[3]))
@@ -754,7 +836,10 @@ class SQLiteStorage(BaseStorage):
                     alpha = excluded.alpha,
                     beta = excluded.beta
                 """,
-                [(ctx, cand, alpha, beta) for (ctx, cand), (alpha, beta) in params.items()]
+                [
+                    (ctx, cand, alpha, beta)
+                    for (ctx, cand), (alpha, beta) in params.items()
+                ],
             )
 
     def decay_and_update_batch(
@@ -762,27 +847,30 @@ class SQLiteStorage(BaseStorage):
     ) -> List[Tuple[float, float]]:
         if not updates:
             return []
-        
+
         conn = self._get_conn()
         cursor = conn.cursor()
         try:
             cursor.execute("BEGIN IMMEDIATE")
-            
+
             keys = [(ctx, cand) for ctx, cand, _, _ in updates]
             current_vals = {}
             chunk_size = 200
             for i in range(0, len(keys), chunk_size):
-                chunk = keys[i:i+chunk_size]
+                chunk = keys[i : i + chunk_size]
                 clauses = []
                 params = []
                 for c_key, cand_name in chunk:
                     clauses.append("(context_key = ? AND candidate_name = ?)")
                     params.extend([c_key, cand_name])
-                query = "SELECT context_key, candidate_name, alpha, beta FROM candidate_params WHERE " + " OR ".join(clauses)
+                query = (
+                    "SELECT context_key, candidate_name, alpha, beta FROM candidate_params WHERE "
+                    + " OR ".join(clauses)
+                )
                 cursor.execute(query, params)
                 for row in cursor.fetchall():
                     current_vals[(row[0], row[1])] = (float(row[2]), float(row[3]))
-            
+
             updated_params = []
             for ctx, cand, decay_factor, reward in updates:
                 alpha, beta = current_vals.get((ctx, cand), (1.0, 1.0))
@@ -790,7 +878,7 @@ class SQLiteStorage(BaseStorage):
                 new_beta = max(1.0, beta * decay_factor + (1.0 - reward))
                 current_vals[(ctx, cand)] = (new_alpha, new_beta)
                 updated_params.append((ctx, cand, new_alpha, new_beta))
-            
+
             cursor.executemany(
                 """
                 INSERT INTO candidate_params (context_key, candidate_name, alpha, beta)
@@ -799,9 +887,12 @@ class SQLiteStorage(BaseStorage):
                     alpha = excluded.alpha,
                     beta = excluded.beta
                 """,
-                [(ctx, cand, val[0], val[1]) for (ctx, cand), val in current_vals.items()]
+                [
+                    (ctx, cand, val[0], val[1])
+                    for (ctx, cand), val in current_vals.items()
+                ],
             )
-            
+
             conn.commit()
             return [(item[2], item[3]) for item in updated_params]
         except Exception as e:
@@ -832,12 +923,12 @@ class SQLiteStorage(BaseStorage):
     ) -> List[Tuple[np.ndarray, np.ndarray]]:
         if not updates:
             return []
-        
+
         conn = self._get_conn()
         cursor = conn.cursor()
         try:
             cursor.execute("BEGIN IMMEDIATE")
-            
+
             candidate_names = list(set([item[0] for item in updates]))
             current_vals = {}
             if candidate_names:
@@ -848,15 +939,27 @@ class SQLiteStorage(BaseStorage):
                     precision = np.array(json.loads(row[1]), dtype=np.float32)
                     reward_vector = np.array(json.loads(row[2]), dtype=np.float32)
                     current_vals[row[0]] = (precision, reward_vector)
-            
+
             results = []
-            for candidate_name, decay_factor, reward, x_augmented, lambda_val, prior_p, diagonal in updates:
+            for (
+                candidate_name,
+                decay_factor,
+                reward,
+                x_augmented,
+                lambda_val,
+                prior_p,
+                diagonal,
+            ) in updates:
                 d = len(x_augmented)
                 val = current_vals.get(candidate_name)
                 if val is not None:
                     precision, reward_vector = val
                 else:
-                    precision = lambda_val * np.ones(d, dtype=np.float32) if diagonal else lambda_val * np.eye(d, dtype=np.float32)
+                    precision = (
+                        lambda_val * np.ones(d, dtype=np.float32)
+                        if diagonal
+                        else lambda_val * np.eye(d, dtype=np.float32)
+                    )
                     reward_vector = np.zeros(d, dtype=np.float32)
                     reward_vector[-1] = lambda_val * prior_p
 
@@ -864,19 +967,37 @@ class SQLiteStorage(BaseStorage):
                 prior_reward_vector[-1] = lambda_val * prior_p
 
                 if diagonal:
-                    new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32) + (x_augmented ** 2)
+                    new_precision = (
+                        decay_factor * precision
+                        + (1.0 - decay_factor)
+                        * lambda_val
+                        * np.ones(d, dtype=np.float32)
+                        + (x_augmented**2)
+                    )
                 else:
-                    new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32) + np.outer(x_augmented, x_augmented)
+                    new_precision = (
+                        decay_factor * precision
+                        + (1.0 - decay_factor)
+                        * lambda_val
+                        * np.eye(d, dtype=np.float32)
+                        + np.outer(x_augmented, x_augmented)
+                    )
 
-                new_reward_vector = decay_factor * reward_vector + (1.0 - decay_factor) * prior_reward_vector + reward * x_augmented
+                new_reward_vector = (
+                    decay_factor * reward_vector
+                    + (1.0 - decay_factor) * prior_reward_vector
+                    + reward * x_augmented
+                )
 
                 current_vals[candidate_name] = (new_precision, new_reward_vector)
                 results.append((np.copy(new_precision), np.copy(new_reward_vector)))
-            
+
             db_updates = []
             for c_name, (prec, rew) in current_vals.items():
-                db_updates.append((c_name, json.dumps(prec.tolist()), json.dumps(rew.tolist())))
-            
+                db_updates.append(
+                    (c_name, json.dumps(prec.tolist()), json.dumps(rew.tolist()))
+                )
+
             cursor.executemany(
                 """
                 INSERT INTO linear_bandit_params (candidate_name, precision_matrix, reward_vector)
@@ -885,9 +1006,9 @@ class SQLiteStorage(BaseStorage):
                     precision_matrix = excluded.precision_matrix,
                     reward_vector = excluded.reward_vector
                 """,
-                db_updates
+                db_updates,
             )
-            
+
             conn.commit()
             return results
         except Exception as e:
@@ -905,10 +1026,12 @@ class SQLiteStorage(BaseStorage):
                 VALUES (?, ?)
                 ON CONFLICT(context_key) DO UPDATE SET vector = excluded.vector
                 """,
-                [(k, json.dumps(list(v))) for k, v in vectors.items()]
+                [(k, json.dumps(list(v))) for k, v in vectors.items()],
             )
 
-    def log_selection(self, trace_id: str, context_key: str, candidate_name: str) -> None:
+    def log_selection(
+        self, trace_id: str, context_key: str, candidate_name: str
+    ) -> None:
         conn = self._get_conn()
         timestamp = datetime.now(timezone.utc).isoformat()
         with conn:
@@ -936,13 +1059,15 @@ class SQLiteStorage(BaseStorage):
         )
         logs = []
         for row in cursor.fetchall():
-            logs.append({
-                "trace_id": row[0],
-                "timestamp": row[1],
-                "context_key": row[2],
-                "candidate_name": row[3],
-                "reward": float(row[4]) if row[4] is not None else None,
-            })
+            logs.append(
+                {
+                    "trace_id": row[0],
+                    "timestamp": row[1],
+                    "context_key": row[2],
+                    "candidate_name": row[3],
+                    "reward": float(row[4]) if row[4] is not None else None,
+                }
+            )
         return logs
 
 
@@ -984,7 +1109,9 @@ class RedisStorage(BaseStorage):
     def _get_key(self, context_key: str) -> str:
         return f"{self.prefix}{context_key}"
 
-    def get_candidate_params(self, context_key: str, candidate_name: str) -> Tuple[float, float]:
+    def get_candidate_params(
+        self, context_key: str, candidate_name: str
+    ) -> Tuple[float, float]:
         key = self._get_key(context_key)
         alpha_val = self.client.hget(key, f"{candidate_name}:alpha")
         beta_val = self.client.hget(key, f"{candidate_name}:beta")
@@ -1047,7 +1174,9 @@ class RedisStorage(BaseStorage):
                     data = json.loads(serialized)
                     mapping = {k: json.dumps(v) for k, v in data.items()}
                     if mapping:
-                        self.client.hset(f"{self.prefix}context_vectors", mapping=mapping)
+                        self.client.hset(
+                            f"{self.prefix}context_vectors", mapping=mapping
+                        )
                     return data
                 except Exception:
                     pass
@@ -1062,7 +1191,7 @@ class RedisStorage(BaseStorage):
         self.client.hset(
             f"{self.prefix}context_vectors",
             key=context_key,
-            value=json.dumps(list(vector))
+            value=json.dumps(list(vector)),
         )
 
     def get_linear_params(
@@ -1089,6 +1218,7 @@ class RedisStorage(BaseStorage):
         diagonal: bool,
     ) -> Tuple[np.ndarray, np.ndarray]:
         import redis
+
         d = len(x_augmented)
         key_prec = f"{self.prefix}linear:{candidate_name}:precision"
         key_rew = f"{self.prefix}linear:{candidate_name}:reward"
@@ -1102,7 +1232,11 @@ class RedisStorage(BaseStorage):
                     precision = np.array(json.loads(prec_val), dtype=np.float32)
                     reward_vector = np.array(json.loads(rew_val), dtype=np.float32)
                 else:
-                    precision = lambda_val * np.ones(d, dtype=np.float32) if diagonal else lambda_val * np.eye(d, dtype=np.float32)
+                    precision = (
+                        lambda_val * np.ones(d, dtype=np.float32)
+                        if diagonal
+                        else lambda_val * np.eye(d, dtype=np.float32)
+                    )
                     reward_vector = np.zeros(d, dtype=np.float32)
                     reward_vector[-1] = lambda_val * prior_p
 
@@ -1110,11 +1244,27 @@ class RedisStorage(BaseStorage):
                 prior_reward_vector[-1] = lambda_val * prior_p
 
                 if diagonal:
-                    new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32) + (x_augmented ** 2)
+                    new_precision = (
+                        decay_factor * precision
+                        + (1.0 - decay_factor)
+                        * lambda_val
+                        * np.ones(d, dtype=np.float32)
+                        + (x_augmented**2)
+                    )
                 else:
-                    new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32) + np.outer(x_augmented, x_augmented)
+                    new_precision = (
+                        decay_factor * precision
+                        + (1.0 - decay_factor)
+                        * lambda_val
+                        * np.eye(d, dtype=np.float32)
+                        + np.outer(x_augmented, x_augmented)
+                    )
 
-                new_reward_vector = decay_factor * reward_vector + (1.0 - decay_factor) * prior_reward_vector + reward * x_augmented
+                new_reward_vector = (
+                    decay_factor * reward_vector
+                    + (1.0 - decay_factor) * prior_reward_vector
+                    + reward * x_augmented
+                )
 
                 pipe.multi()
                 pipe.set(key_prec, json.dumps(new_precision.tolist()))
@@ -1134,7 +1284,7 @@ class RedisStorage(BaseStorage):
             key = self._get_key(context_key)
             pipe.hget(key, f"{candidate_name}:alpha")
             pipe.hget(key, f"{candidate_name}:beta")
-        
+
         results_raw = pipe.execute()
         results = {}
         for idx, (context_key, candidate_name) in enumerate(keys):
@@ -1209,11 +1359,12 @@ class RedisStorage(BaseStorage):
         if not updates:
             return []
         import redis
+
         candidate_names = list(set([item[0] for item in updates]))
         keys_prec = [f"{self.prefix}linear:{c}:precision" for c in candidate_names]
         keys_rew = [f"{self.prefix}linear:{c}:reward" for c in candidate_names]
         all_keys = keys_prec + keys_rew
-        
+
         pipe = self.client.pipeline()
         while True:
             try:
@@ -1223,7 +1374,7 @@ class RedisStorage(BaseStorage):
                 for k in keys_rew:
                     pipe.get(k)
                 raw_vals = pipe.execute()
-                
+
                 current_vals = {}
                 num_cands = len(candidate_names)
                 for idx, c in enumerate(candidate_names):
@@ -1233,15 +1384,27 @@ class RedisStorage(BaseStorage):
                         precision = np.array(json.loads(prec_val), dtype=np.float32)
                         reward_vector = np.array(json.loads(rew_val), dtype=np.float32)
                         current_vals[c] = (precision, reward_vector)
-                
+
                 results = []
-                for candidate_name, decay_factor, reward, x_augmented, lambda_val, prior_p, diagonal in updates:
+                for (
+                    candidate_name,
+                    decay_factor,
+                    reward,
+                    x_augmented,
+                    lambda_val,
+                    prior_p,
+                    diagonal,
+                ) in updates:
                     d = len(x_augmented)
                     val = current_vals.get(candidate_name)
                     if val is not None:
                         precision, reward_vector = val
                     else:
-                        precision = lambda_val * np.ones(d, dtype=np.float32) if diagonal else lambda_val * np.eye(d, dtype=np.float32)
+                        precision = (
+                            lambda_val * np.ones(d, dtype=np.float32)
+                            if diagonal
+                            else lambda_val * np.eye(d, dtype=np.float32)
+                        )
                         reward_vector = np.zeros(d, dtype=np.float32)
                         reward_vector[-1] = lambda_val * prior_p
 
@@ -1249,19 +1412,39 @@ class RedisStorage(BaseStorage):
                     prior_reward_vector[-1] = lambda_val * prior_p
 
                     if diagonal:
-                        new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32) + (x_augmented ** 2)
+                        new_precision = (
+                            decay_factor * precision
+                            + (1.0 - decay_factor)
+                            * lambda_val
+                            * np.ones(d, dtype=np.float32)
+                            + (x_augmented**2)
+                        )
                     else:
-                        new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32) + np.outer(x_augmented, x_augmented)
+                        new_precision = (
+                            decay_factor * precision
+                            + (1.0 - decay_factor)
+                            * lambda_val
+                            * np.eye(d, dtype=np.float32)
+                            + np.outer(x_augmented, x_augmented)
+                        )
 
-                    new_reward_vector = decay_factor * reward_vector + (1.0 - decay_factor) * prior_reward_vector + reward * x_augmented
+                    new_reward_vector = (
+                        decay_factor * reward_vector
+                        + (1.0 - decay_factor) * prior_reward_vector
+                        + reward * x_augmented
+                    )
 
                     current_vals[candidate_name] = (new_precision, new_reward_vector)
                     results.append((np.copy(new_precision), np.copy(new_reward_vector)))
-                
+
                 pipe.multi()
                 for c, (prec, rew) in current_vals.items():
-                    pipe.set(f"{self.prefix}linear:{c}:precision", json.dumps(prec.tolist()))
-                    pipe.set(f"{self.prefix}linear:{c}:reward", json.dumps(rew.tolist()))
+                    pipe.set(
+                        f"{self.prefix}linear:{c}:precision", json.dumps(prec.tolist())
+                    )
+                    pipe.set(
+                        f"{self.prefix}linear:{c}:reward", json.dumps(rew.tolist())
+                    )
                 pipe.execute()
                 return results
             except redis.WatchError:
@@ -1272,22 +1455,23 @@ class RedisStorage(BaseStorage):
             return
         pipe = self.client.pipeline()
         for k, v in vectors.items():
-            pipe.hset(
-                f"{self.prefix}context_vectors",
-                key=k,
-                value=json.dumps(list(v))
-            )
+            pipe.hset(f"{self.prefix}context_vectors", key=k, value=json.dumps(list(v)))
         pipe.execute()
 
-    def log_selection(self, trace_id: str, context_key: str, candidate_name: str) -> None:
+    def log_selection(
+        self, trace_id: str, context_key: str, candidate_name: str
+    ) -> None:
         timestamp = datetime.now(timezone.utc).isoformat()
         key = f"{self.prefix}log:{trace_id}"
-        self.client.hset(key, mapping={
-            "trace_id": trace_id,
-            "timestamp": timestamp,
-            "context_key": context_key,
-            "candidate_name": candidate_name,
-        })
+        self.client.hset(
+            key,
+            mapping={
+                "trace_id": trace_id,
+                "timestamp": timestamp,
+                "context_key": context_key,
+                "candidate_name": candidate_name,
+            },
+        )
         self.client.sadd(f"{self.prefix}log_ids", trace_id)
 
     def log_feedback(self, trace_id: str, reward: float) -> None:
@@ -1300,7 +1484,10 @@ class RedisStorage(BaseStorage):
         logs = []
         if trace_ids:
             pipe = self.client.pipeline()
-            tid_list = [tid.decode("utf-8") if isinstance(tid, bytes) else str(tid) for tid in trace_ids]
+            tid_list = [
+                tid.decode("utf-8") if isinstance(tid, bytes) else str(tid)
+                for tid in trace_ids
+            ]
             for tid_str in tid_list:
                 key = f"{self.prefix}log:{tid_str}"
                 pipe.hgetall(key)
@@ -1312,14 +1499,20 @@ class RedisStorage(BaseStorage):
                         k_str = k.decode("utf-8") if isinstance(k, bytes) else str(k)
                         v_str = v.decode("utf-8") if isinstance(v, bytes) else str(v)
                         decoded[k_str] = v_str
-                    
-                    logs.append({
-                        "trace_id": decoded.get("trace_id", tid_str),
-                        "timestamp": decoded.get("timestamp", ""),
-                        "context_key": decoded.get("context_key", ""),
-                        "candidate_name": decoded.get("candidate_name", ""),
-                        "reward": float(decoded["reward"]) if decoded.get("reward") is not None else None,
-                    })
+
+                    logs.append(
+                        {
+                            "trace_id": decoded.get("trace_id", tid_str),
+                            "timestamp": decoded.get("timestamp", ""),
+                            "context_key": decoded.get("context_key", ""),
+                            "candidate_name": decoded.get("candidate_name", ""),
+                            "reward": (
+                                float(decoded["reward"])
+                                if decoded.get("reward") is not None
+                                else None
+                            ),
+                        }
+                    )
         return sorted(logs, key=lambda x: x["timestamp"])
 
 
@@ -1327,7 +1520,9 @@ class AsyncBaseStorage(abc.ABC):
     """Abstract base class defining the async storage backend interface for BayesianCortex."""
 
     @abc.abstractmethod
-    async def get_candidate_params(self, context_key: str, candidate_name: str) -> Tuple[float, float]:
+    async def get_candidate_params(
+        self, context_key: str, candidate_name: str
+    ) -> Tuple[float, float]:
         """
         Retrieve the (alpha, beta) posterior parameters for a candidate under a given context.
         Defaults to (1.0, 1.0) if not found.
@@ -1335,7 +1530,9 @@ class AsyncBaseStorage(abc.ABC):
         pass
 
     @abc.abstractmethod
-    async def ahas_candidate_params(self, context_key: str, candidate_name: str) -> bool:
+    async def ahas_candidate_params(
+        self, context_key: str, candidate_name: str
+    ) -> bool:
         """
         Return True if the candidate has ever been observed under the given context
         (i.e. a record exists in storage), False otherwise.
@@ -1500,7 +1697,11 @@ class AsyncBaseStorage(abc.ABC):
         """
         res = []
         for cand, decay, reward, x_aug, lamb, prior, diag in updates:
-            res.append(await self.adecay_and_update_linear(cand, decay, reward, x_aug, lamb, prior, diag))
+            res.append(
+                await self.adecay_and_update_linear(
+                    cand, decay, reward, x_aug, lamb, prior, diag
+                )
+            )
         return res
 
     async def asave_vectors(self, vectors: Dict[str, Sequence[float]]) -> None:
@@ -1511,7 +1712,9 @@ class AsyncBaseStorage(abc.ABC):
             await self.save_vector(key, vector)
 
     @abc.abstractmethod
-    async def log_selection(self, trace_id: str, context_key: str, candidate_name: str) -> None:
+    async def log_selection(
+        self, trace_id: str, context_key: str, candidate_name: str
+    ) -> None:
         """Log a candidate selection event."""
         pass
 
@@ -1539,11 +1742,15 @@ class AsyncInMemoryStorage(AsyncBaseStorage):
         self._selection_logs: Dict[str, Dict[str, Any]] = {}
         self._lock = asyncio.Lock()
 
-    async def get_candidate_params(self, context_key: str, candidate_name: str) -> Tuple[float, float]:
+    async def get_candidate_params(
+        self, context_key: str, candidate_name: str
+    ) -> Tuple[float, float]:
         async with self._lock:
             return self._data.get((context_key, candidate_name), (1.0, 1.0))
 
-    async def ahas_candidate_params(self, context_key: str, candidate_name: str) -> bool:
+    async def ahas_candidate_params(
+        self, context_key: str, candidate_name: str
+    ) -> bool:
         async with self._lock:
             return (context_key, candidate_name) in self._data
 
@@ -1616,7 +1823,11 @@ class AsyncInMemoryStorage(AsyncBaseStorage):
             if val is not None:
                 precision, reward_vector = val
             else:
-                precision = lambda_val * np.ones(d, dtype=np.float32) if diagonal else lambda_val * np.eye(d, dtype=np.float32)
+                precision = (
+                    lambda_val * np.ones(d, dtype=np.float32)
+                    if diagonal
+                    else lambda_val * np.eye(d, dtype=np.float32)
+                )
                 reward_vector = np.zeros(d, dtype=np.float32)
                 reward_vector[-1] = lambda_val * prior_p
 
@@ -1624,11 +1835,23 @@ class AsyncInMemoryStorage(AsyncBaseStorage):
             prior_reward_vector[-1] = lambda_val * prior_p
 
             if diagonal:
-                new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32) + (x_augmented ** 2)
+                new_precision = (
+                    decay_factor * precision
+                    + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32)
+                    + (x_augmented**2)
+                )
             else:
-                new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32) + np.outer(x_augmented, x_augmented)
+                new_precision = (
+                    decay_factor * precision
+                    + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32)
+                    + np.outer(x_augmented, x_augmented)
+                )
 
-            new_reward_vector = decay_factor * reward_vector + (1.0 - decay_factor) * prior_reward_vector + reward * x_augmented
+            new_reward_vector = (
+                decay_factor * reward_vector
+                + (1.0 - decay_factor) * prior_reward_vector
+                + reward * x_augmented
+            )
 
             self._linear_data[candidate_name] = (new_precision, new_reward_vector)
             return np.copy(new_precision), np.copy(new_reward_vector)
@@ -1675,13 +1898,25 @@ class AsyncInMemoryStorage(AsyncBaseStorage):
     ) -> List[Tuple[np.ndarray, np.ndarray]]:
         async with self._lock:
             results = []
-            for candidate_name, decay_factor, reward, x_augmented, lambda_val, prior_p, diagonal in updates:
+            for (
+                candidate_name,
+                decay_factor,
+                reward,
+                x_augmented,
+                lambda_val,
+                prior_p,
+                diagonal,
+            ) in updates:
                 d = len(x_augmented)
                 val = self._linear_data.get(candidate_name)
                 if val is not None:
                     precision, reward_vector = val
                 else:
-                    precision = lambda_val * np.ones(d, dtype=np.float32) if diagonal else lambda_val * np.eye(d, dtype=np.float32)
+                    precision = (
+                        lambda_val * np.ones(d, dtype=np.float32)
+                        if diagonal
+                        else lambda_val * np.eye(d, dtype=np.float32)
+                    )
                     reward_vector = np.zeros(d, dtype=np.float32)
                     reward_vector[-1] = lambda_val * prior_p
 
@@ -1689,11 +1924,27 @@ class AsyncInMemoryStorage(AsyncBaseStorage):
                 prior_reward_vector[-1] = lambda_val * prior_p
 
                 if diagonal:
-                    new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32) + (x_augmented ** 2)
+                    new_precision = (
+                        decay_factor * precision
+                        + (1.0 - decay_factor)
+                        * lambda_val
+                        * np.ones(d, dtype=np.float32)
+                        + (x_augmented**2)
+                    )
                 else:
-                    new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32) + np.outer(x_augmented, x_augmented)
+                    new_precision = (
+                        decay_factor * precision
+                        + (1.0 - decay_factor)
+                        * lambda_val
+                        * np.eye(d, dtype=np.float32)
+                        + np.outer(x_augmented, x_augmented)
+                    )
 
-                new_reward_vector = decay_factor * reward_vector + (1.0 - decay_factor) * prior_reward_vector + reward * x_augmented
+                new_reward_vector = (
+                    decay_factor * reward_vector
+                    + (1.0 - decay_factor) * prior_reward_vector
+                    + reward * x_augmented
+                )
 
                 self._linear_data[candidate_name] = (new_precision, new_reward_vector)
                 results.append((np.copy(new_precision), np.copy(new_reward_vector)))
@@ -1704,7 +1955,9 @@ class AsyncInMemoryStorage(AsyncBaseStorage):
             for key, vector in vectors.items():
                 self._vectors[key] = list(vector)
 
-    async def log_selection(self, trace_id: str, context_key: str, candidate_name: str) -> None:
+    async def log_selection(
+        self, trace_id: str, context_key: str, candidate_name: str
+    ) -> None:
         timestamp = datetime.now(timezone.utc).isoformat()
         async with self._lock:
             if trace_id not in self._selection_logs:
@@ -1790,11 +2043,18 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
     to handle high concurrency workloads across different threads, tasks, and processes.
     """
 
-    def __init__(self, db_path: str = "bayesian_cortex.db", max_connections: int = 10, timeout: float = 5.0) -> None:
+    def __init__(
+        self,
+        db_path: str = "bayesian_cortex.db",
+        max_connections: int = 10,
+        timeout: float = 5.0,
+    ) -> None:
         self.db_path = db_path
         self.max_connections = max_connections
         self.timeout = timeout
-        self._pool = AsyncSQLiteConnectionPool(db_path, max_size=max_connections, timeout=timeout)
+        self._pool = AsyncSQLiteConnectionPool(
+            db_path, max_size=max_connections, timeout=timeout
+        )
         self._init_lock = asyncio.Lock()
         self._initialized = False
         self._conn: Optional[Any] = None
@@ -1806,17 +2066,28 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
         """
         if self._conn is None:
             import aiosqlite
+
             self._conn = await aiosqlite.connect(self.db_path)
             await self._conn.execute("PRAGMA journal_mode=WAL;")
             await self._conn.execute(f"PRAGMA busy_timeout={int(self.timeout * 1000)};")
             await self._conn.commit()
         return self._conn
 
-    async def _execute_with_retry(self, func, *args, max_retries: int = 5, initial_delay: float = 0.05, max_delay: float = 1.0, **kwargs):
-        import sqlite3
+    async def _execute_with_retry(
+        self,
+        func,
+        *args,
+        max_retries: int = 5,
+        initial_delay: float = 0.05,
+        max_delay: float = 1.0,
+        **kwargs,
+    ):
         import random
+        import sqlite3
+
         try:
             import aiosqlite
+
             sqlite_errors = (sqlite3.OperationalError, aiosqlite.OperationalError)
         except ImportError:
             sqlite_errors = (sqlite3.OperationalError,)
@@ -1834,29 +2105,47 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
 
     async def _migrate_database(self, conn) -> None:
         # Check if legacy tool_params exists
-        async with conn.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='tool_params';") as cursor:
+        async with conn.execute(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='tool_params';"
+        ) as cursor:
             row = await cursor.fetchone()
             if row and row[0] > 0:
-                await conn.execute("ALTER TABLE tool_params RENAME TO candidate_params;")
-                await conn.execute("ALTER TABLE candidate_params RENAME COLUMN tool_name TO candidate_name;")
-                
+                await conn.execute(
+                    "ALTER TABLE tool_params RENAME TO candidate_params;"
+                )
+                await conn.execute(
+                    "ALTER TABLE candidate_params RENAME COLUMN tool_name TO candidate_name;"
+                )
+
         # Check if linear_bandit_params exists and has tool_name column
-        async with conn.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='linear_bandit_params';") as cursor:
+        async with conn.execute(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='linear_bandit_params';"
+        ) as cursor:
             row = await cursor.fetchone()
             if row and row[0] > 0:
-                async with conn.execute("PRAGMA table_info(linear_bandit_params);") as info_cursor:
+                async with conn.execute(
+                    "PRAGMA table_info(linear_bandit_params);"
+                ) as info_cursor:
                     columns = [r[1] for r in await info_cursor.fetchall()]
                     if "tool_name" in columns:
-                        await conn.execute("ALTER TABLE linear_bandit_params RENAME COLUMN tool_name TO candidate_name;")
-                        
+                        await conn.execute(
+                            "ALTER TABLE linear_bandit_params RENAME COLUMN tool_name TO candidate_name;"
+                        )
+
         # Check if selection_log exists and has tool_name column
-        async with conn.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='selection_log';") as cursor:
+        async with conn.execute(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='selection_log';"
+        ) as cursor:
             row = await cursor.fetchone()
             if row and row[0] > 0:
-                async with conn.execute("PRAGMA table_info(selection_log);") as info_cursor:
+                async with conn.execute(
+                    "PRAGMA table_info(selection_log);"
+                ) as info_cursor:
                     columns = [r[1] for r in await info_cursor.fetchall()]
                     if "tool_name" in columns:
-                        await conn.execute("ALTER TABLE selection_log RENAME COLUMN tool_name TO candidate_name;")
+                        await conn.execute(
+                            "ALTER TABLE selection_log RENAME COLUMN tool_name TO candidate_name;"
+                        )
 
     async def _ensure_initialized(self) -> None:
         if self._initialized:
@@ -1866,8 +2155,7 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                 return
             async with self._pool.connection() as conn:
                 await self._migrate_database(conn)
-                await conn.execute(
-                    """
+                await conn.execute("""
                     CREATE TABLE IF NOT EXISTS candidate_params (
                         context_key TEXT,
                         candidate_name TEXT,
@@ -1875,35 +2163,27 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                         beta REAL,
                         PRIMARY KEY (context_key, candidate_name)
                     )
-                    """
-                )
-                await conn.execute(
-                    """
+                    """)
+                await conn.execute("""
                     CREATE TABLE IF NOT EXISTS metadata (
                         key TEXT PRIMARY KEY,
                         val TEXT
                     )
-                    """
-                )
-                await conn.execute(
-                    """
+                    """)
+                await conn.execute("""
                     CREATE TABLE IF NOT EXISTS context_vectors (
                         context_key TEXT PRIMARY KEY,
                         vector TEXT
                     )
-                    """
-                )
-                await conn.execute(
-                    """
+                    """)
+                await conn.execute("""
                     CREATE TABLE IF NOT EXISTS linear_bandit_params (
                         candidate_name TEXT PRIMARY KEY,
                         precision_matrix TEXT,
                         reward_vector TEXT
                     )
-                    """
-                )
-                await conn.execute(
-                    """
+                    """)
+                await conn.execute("""
                     CREATE TABLE IF NOT EXISTS selection_log (
                         trace_id TEXT PRIMARY KEY,
                         timestamp TEXT,
@@ -1911,13 +2191,15 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                         candidate_name TEXT,
                         reward REAL
                     )
-                    """
-                )
+                    """)
                 await conn.commit()
             self._initialized = True
 
-    async def get_candidate_params(self, context_key: str, candidate_name: str) -> Tuple[float, float]:
+    async def get_candidate_params(
+        self, context_key: str, candidate_name: str
+    ) -> Tuple[float, float]:
         await self._ensure_initialized()
+
         async def _run():
             async with self._pool.connection() as conn:
                 async with conn.execute(
@@ -1928,10 +2210,14 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                     if row is not None:
                         return float(row[0]), float(row[1])
                     return 1.0, 1.0
+
         return await self._execute_with_retry(_run)
 
-    async def ahas_candidate_params(self, context_key: str, candidate_name: str) -> bool:
+    async def ahas_candidate_params(
+        self, context_key: str, candidate_name: str
+    ) -> bool:
         await self._ensure_initialized()
+
         async def _run():
             async with self._pool.connection() as conn:
                 async with conn.execute(
@@ -1940,12 +2226,14 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                 ) as cursor:
                     row = await cursor.fetchone()
                     return row is not None
+
         return await self._execute_with_retry(_run)
 
     async def update_candidate_params(
         self, context_key: str, candidate_name: str, alpha: float, beta: float
     ) -> None:
         await self._ensure_initialized()
+
         async def _run():
             async with self._pool.connection() as conn:
                 await conn.execute(
@@ -1959,12 +2247,14 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                     (context_key, candidate_name, alpha, beta),
                 )
                 await conn.commit()
+
         await self._execute_with_retry(_run)
 
     async def decay_and_update(
         self, context_key: str, candidate_name: str, decay_factor: float, reward: float
     ) -> Tuple[float, float]:
         await self._ensure_initialized()
+
         async def _run():
             async with self._pool.connection() as conn:
                 try:
@@ -1997,6 +2287,7 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                 except Exception:
                     await conn.rollback()
                     raise
+
         return await self._execute_with_retry(_run)
 
     async def close(self) -> None:
@@ -2007,15 +2298,20 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
 
     async def load_metadata(self, key: str) -> Optional[str]:
         await self._ensure_initialized()
+
         async def _run():
             async with self._pool.connection() as conn:
-                async with conn.execute("SELECT val FROM metadata WHERE key = ?", (key,)) as cursor:
+                async with conn.execute(
+                    "SELECT val FROM metadata WHERE key = ?", (key,)
+                ) as cursor:
                     row = await cursor.fetchone()
                     return row[0] if row is not None else None
+
         return await self._execute_with_retry(_run)
 
     async def save_metadata(self, key: str, value: str) -> None:
         await self._ensure_initialized()
+
         async def _run():
             async with self._pool.connection() as conn:
                 await conn.execute(
@@ -2026,13 +2322,17 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                     (key, value),
                 )
                 await conn.commit()
+
         await self._execute_with_retry(_run)
 
     async def load_all_vectors(self) -> Dict[str, List[float]]:
         await self._ensure_initialized()
+
         async def _run():
             async with self._pool.connection() as conn:
-                async with conn.execute("SELECT context_key, vector FROM context_vectors") as cursor:
+                async with conn.execute(
+                    "SELECT context_key, vector FROM context_vectors"
+                ) as cursor:
                     rows = await cursor.fetchall()
 
                 if not rows:
@@ -2051,7 +2351,9 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                                 )
                             await conn.commit()
                             # Query again
-                            async with conn.execute("SELECT context_key, vector FROM context_vectors") as cursor2:
+                            async with conn.execute(
+                                "SELECT context_key, vector FROM context_vectors"
+                            ) as cursor2:
                                 rows = await cursor2.fetchall()
                         except Exception:
                             pass
@@ -2060,10 +2362,12 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                 for row in rows:
                     res[row[0]] = json.loads(row[1])
                 return res
+
         return await self._execute_with_retry(_run)
 
     async def save_vector(self, context_key: str, vector: Sequence[float]) -> None:
         await self._ensure_initialized()
+
         async def _run():
             async with self._pool.connection() as conn:
                 await conn.execute(
@@ -2075,12 +2379,14 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                     (context_key, json.dumps(list(vector))),
                 )
                 await conn.commit()
+
         await self._execute_with_retry(_run)
 
     async def aget_linear_params(
         self, candidate_name: str
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         await self._ensure_initialized()
+
         async def _run():
             async with self._pool.connection() as conn:
                 async with conn.execute(
@@ -2093,6 +2399,7 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                         reward_vector = np.array(json.loads(row[1]), dtype=np.float32)
                         return precision, reward_vector
                     return None, None
+
         return await self._execute_with_retry(_run)
 
     async def adecay_and_update_linear(
@@ -2107,6 +2414,7 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
     ) -> Tuple[np.ndarray, np.ndarray]:
         await self._ensure_initialized()
         d = len(x_augmented)
+
         async def _run():
             async with self._pool.connection() as conn:
                 try:
@@ -2120,7 +2428,11 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                         precision = np.array(json.loads(row[0]), dtype=np.float32)
                         reward_vector = np.array(json.loads(row[1]), dtype=np.float32)
                     else:
-                        precision = lambda_val * np.ones(d, dtype=np.float32) if diagonal else lambda_val * np.eye(d, dtype=np.float32)
+                        precision = (
+                            lambda_val * np.ones(d, dtype=np.float32)
+                            if diagonal
+                            else lambda_val * np.eye(d, dtype=np.float32)
+                        )
                         reward_vector = np.zeros(d, dtype=np.float32)
                         reward_vector[-1] = lambda_val * prior_p
 
@@ -2128,11 +2440,27 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                     prior_reward_vector[-1] = lambda_val * prior_p
 
                     if diagonal:
-                        new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32) + (x_augmented ** 2)
+                        new_precision = (
+                            decay_factor * precision
+                            + (1.0 - decay_factor)
+                            * lambda_val
+                            * np.ones(d, dtype=np.float32)
+                            + (x_augmented**2)
+                        )
                     else:
-                        new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32) + np.outer(x_augmented, x_augmented)
+                        new_precision = (
+                            decay_factor * precision
+                            + (1.0 - decay_factor)
+                            * lambda_val
+                            * np.eye(d, dtype=np.float32)
+                            + np.outer(x_augmented, x_augmented)
+                        )
 
-                    new_reward_vector = decay_factor * reward_vector + (1.0 - decay_factor) * prior_reward_vector + reward * x_augmented
+                    new_reward_vector = (
+                        decay_factor * reward_vector
+                        + (1.0 - decay_factor) * prior_reward_vector
+                        + reward * x_augmented
+                    )
 
                     await conn.execute(
                         """
@@ -2142,13 +2470,18 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                             precision_matrix = excluded.precision_matrix,
                             reward_vector = excluded.reward_vector
                         """,
-                        (candidate_name, json.dumps(new_precision.tolist()), json.dumps(new_reward_vector.tolist())),
+                        (
+                            candidate_name,
+                            json.dumps(new_precision.tolist()),
+                            json.dumps(new_reward_vector.tolist()),
+                        ),
                     )
                     await conn.commit()
                     return new_precision, new_reward_vector
                 except Exception:
                     await conn.rollback()
                     raise
+
         return await self._execute_with_retry(_run)
 
     async def get_candidate_params_batch(
@@ -2157,23 +2490,28 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
         await self._ensure_initialized()
         if not keys:
             return {}
+
         async def _run():
-            results = {key: (1.0, 1.0) for key in keys}
+            results = dict.fromkeys(keys, (1.0, 1.0))
             async with self._pool.connection() as conn:
                 chunk_size = 200
                 for i in range(0, len(keys), chunk_size):
-                    chunk = keys[i:i+chunk_size]
+                    chunk = keys[i : i + chunk_size]
                     clauses = []
                     params = []
                     for c_key, cand_name in chunk:
                         clauses.append("(context_key = ? AND candidate_name = ?)")
                         params.extend([c_key, cand_name])
-                    query = "SELECT context_key, candidate_name, alpha, beta FROM candidate_params WHERE " + " OR ".join(clauses)
+                    query = (
+                        "SELECT context_key, candidate_name, alpha, beta FROM candidate_params WHERE "
+                        + " OR ".join(clauses)
+                    )
                     async with conn.execute(query, params) as cursor:
                         rows = await cursor.fetchall()
                         for row in rows:
                             results[(row[0], row[1])] = (float(row[2]), float(row[3]))
             return results
+
         return await self._execute_with_retry(_run)
 
     async def update_candidate_params_batch(
@@ -2182,6 +2520,7 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
         await self._ensure_initialized()
         if not params:
             return
+
         async def _run():
             async with self._pool.connection() as conn:
                 await conn.executemany(
@@ -2192,9 +2531,13 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                         alpha = excluded.alpha,
                         beta = excluded.beta
                     """,
-                    [(ctx, cand, alpha, beta) for (ctx, cand), (alpha, beta) in params.items()]
+                    [
+                        (ctx, cand, alpha, beta)
+                        for (ctx, cand), (alpha, beta) in params.items()
+                    ],
                 )
                 await conn.commit()
+
         await self._execute_with_retry(_run)
 
     async def decay_and_update_batch(
@@ -2203,27 +2546,34 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
         await self._ensure_initialized()
         if not updates:
             return []
+
         async def _run():
             async with self._pool.connection() as conn:
                 try:
                     await conn.execute("BEGIN IMMEDIATE")
-                    
+
                     keys = [(ctx, cand) for ctx, cand, _, _ in updates]
                     current_vals = {}
                     chunk_size = 200
                     for i in range(0, len(keys), chunk_size):
-                        chunk = keys[i:i+chunk_size]
+                        chunk = keys[i : i + chunk_size]
                         clauses = []
                         params = []
                         for c_key, cand_name in chunk:
                             clauses.append("(context_key = ? AND candidate_name = ?)")
                             params.extend([c_key, cand_name])
-                        query = "SELECT context_key, candidate_name, alpha, beta FROM candidate_params WHERE " + " OR ".join(clauses)
+                        query = (
+                            "SELECT context_key, candidate_name, alpha, beta FROM candidate_params WHERE "
+                            + " OR ".join(clauses)
+                        )
                         async with conn.execute(query, params) as cursor:
                             rows = await cursor.fetchall()
                             for row in rows:
-                                current_vals[(row[0], row[1])] = (float(row[2]), float(row[3]))
-                    
+                                current_vals[(row[0], row[1])] = (
+                                    float(row[2]),
+                                    float(row[3]),
+                                )
+
                     updated_params = []
                     for ctx, cand, decay_factor, reward in updates:
                         alpha, beta = current_vals.get((ctx, cand), (1.0, 1.0))
@@ -2231,8 +2581,11 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                         new_beta = max(1.0, beta * decay_factor + (1.0 - reward))
                         current_vals[(ctx, cand)] = (new_alpha, new_beta)
                         updated_params.append((ctx, cand, new_alpha, new_beta))
-                    
-                    db_updates = [(ctx, cand, val[0], val[1]) for (ctx, cand), val in current_vals.items()]
+
+                    db_updates = [
+                        (ctx, cand, val[0], val[1])
+                        for (ctx, cand), val in current_vals.items()
+                    ]
                     await conn.executemany(
                         """
                         INSERT INTO candidate_params (context_key, candidate_name, alpha, beta)
@@ -2241,13 +2594,14 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                             alpha = excluded.alpha,
                             beta = excluded.beta
                         """,
-                        db_updates
+                        db_updates,
                     )
                     await conn.commit()
                     return [(item[2], item[3]) for item in updated_params]
                 except Exception:
                     await conn.rollback()
                     raise
+
         return await self._execute_with_retry(_run)
 
     async def aget_linear_params_batch(
@@ -2256,6 +2610,7 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
         await self._ensure_initialized()
         if not candidate_names:
             return {}
+
         async def _run():
             async with self._pool.connection() as conn:
                 placeholders = ",".join(["?"] * len(candidate_names))
@@ -2270,6 +2625,7 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                     reward_vector = np.array(json.loads(row[2]), dtype=np.float32)
                     results[row[0]] = (precision, reward_vector)
                 return results
+
         return await self._execute_with_retry(_run)
 
     async def adecay_and_update_linear_batch(
@@ -2278,11 +2634,12 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
         await self._ensure_initialized()
         if not updates:
             return []
+
         async def _run():
             async with self._pool.connection() as conn:
                 try:
                     await conn.execute("BEGIN IMMEDIATE")
-                    
+
                     candidate_names = list(set([item[0] for item in updates]))
                     current_vals = {}
                     if candidate_names:
@@ -2291,18 +2648,34 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                         async with conn.execute(query, candidate_names) as cursor:
                             rows = await cursor.fetchall()
                             for row in rows:
-                                precision = np.array(json.loads(row[1]), dtype=np.float32)
-                                reward_vector = np.array(json.loads(row[2]), dtype=np.float32)
+                                precision = np.array(
+                                    json.loads(row[1]), dtype=np.float32
+                                )
+                                reward_vector = np.array(
+                                    json.loads(row[2]), dtype=np.float32
+                                )
                                 current_vals[row[0]] = (precision, reward_vector)
-                    
+
                     results = []
-                    for candidate_name, decay_factor, reward, x_augmented, lambda_val, prior_p, diagonal in updates:
+                    for (
+                        candidate_name,
+                        decay_factor,
+                        reward,
+                        x_augmented,
+                        lambda_val,
+                        prior_p,
+                        diagonal,
+                    ) in updates:
                         d = len(x_augmented)
                         val = current_vals.get(candidate_name)
                         if val is not None:
                             precision, reward_vector = val
                         else:
-                            precision = lambda_val * np.ones(d, dtype=np.float32) if diagonal else lambda_val * np.eye(d, dtype=np.float32)
+                            precision = (
+                                lambda_val * np.ones(d, dtype=np.float32)
+                                if diagonal
+                                else lambda_val * np.eye(d, dtype=np.float32)
+                            )
                             reward_vector = np.zeros(d, dtype=np.float32)
                             reward_vector[-1] = lambda_val * prior_p
 
@@ -2310,19 +2683,46 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                         prior_reward_vector[-1] = lambda_val * prior_p
 
                         if diagonal:
-                            new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32) + (x_augmented ** 2)
+                            new_precision = (
+                                decay_factor * precision
+                                + (1.0 - decay_factor)
+                                * lambda_val
+                                * np.ones(d, dtype=np.float32)
+                                + (x_augmented**2)
+                            )
                         else:
-                            new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32) + np.outer(x_augmented, x_augmented)
+                            new_precision = (
+                                decay_factor * precision
+                                + (1.0 - decay_factor)
+                                * lambda_val
+                                * np.eye(d, dtype=np.float32)
+                                + np.outer(x_augmented, x_augmented)
+                            )
 
-                        new_reward_vector = decay_factor * reward_vector + (1.0 - decay_factor) * prior_reward_vector + reward * x_augmented
+                        new_reward_vector = (
+                            decay_factor * reward_vector
+                            + (1.0 - decay_factor) * prior_reward_vector
+                            + reward * x_augmented
+                        )
 
-                        current_vals[candidate_name] = (new_precision, new_reward_vector)
-                        results.append((np.copy(new_precision), np.copy(new_reward_vector)))
-                    
+                        current_vals[candidate_name] = (
+                            new_precision,
+                            new_reward_vector,
+                        )
+                        results.append(
+                            (np.copy(new_precision), np.copy(new_reward_vector))
+                        )
+
                     db_updates = []
                     for c_name, (prec, rew) in current_vals.items():
-                        db_updates.append((c_name, json.dumps(prec.tolist()), json.dumps(rew.tolist())))
-                    
+                        db_updates.append(
+                            (
+                                c_name,
+                                json.dumps(prec.tolist()),
+                                json.dumps(rew.tolist()),
+                            )
+                        )
+
                     await conn.executemany(
                         """
                         INSERT INTO linear_bandit_params (candidate_name, precision_matrix, reward_vector)
@@ -2331,19 +2731,21 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                             precision_matrix = excluded.precision_matrix,
                             reward_vector = excluded.reward_vector
                         """,
-                        db_updates
+                        db_updates,
                     )
                     await conn.commit()
                     return results
                 except Exception:
                     await conn.rollback()
                     raise
+
         return await self._execute_with_retry(_run)
 
     async def asave_vectors(self, vectors: Dict[str, Sequence[float]]) -> None:
         await self._ensure_initialized()
         if not vectors:
             return
+
         async def _run():
             async with self._pool.connection() as conn:
                 await conn.executemany(
@@ -2352,14 +2754,18 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                     VALUES (?, ?)
                     ON CONFLICT(context_key) DO UPDATE SET vector = excluded.vector
                     """,
-                    [(k, json.dumps(list(v))) for k, v in vectors.items()]
+                    [(k, json.dumps(list(v))) for k, v in vectors.items()],
                 )
                 await conn.commit()
+
         await self._execute_with_retry(_run)
 
-    async def log_selection(self, trace_id: str, context_key: str, candidate_name: str) -> None:
+    async def log_selection(
+        self, trace_id: str, context_key: str, candidate_name: str
+    ) -> None:
         await self._ensure_initialized()
         timestamp = datetime.now(timezone.utc).isoformat()
+
         async def _run():
             async with self._pool.connection() as conn:
                 await conn.execute(
@@ -2370,10 +2776,12 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                     (trace_id, timestamp, context_key, candidate_name),
                 )
                 await conn.commit()
+
         await self._execute_with_retry(_run)
 
     async def log_feedback(self, trace_id: str, reward: float) -> None:
         await self._ensure_initialized()
+
         async def _run():
             async with self._pool.connection() as conn:
                 await conn.execute(
@@ -2381,10 +2789,12 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                     (reward, trace_id),
                 )
                 await conn.commit()
+
         await self._execute_with_retry(_run)
 
     async def get_selection_logs(self) -> List[Dict[str, Any]]:
         await self._ensure_initialized()
+
         async def _run():
             async with self._pool.connection() as conn:
                 async with conn.execute(
@@ -2392,16 +2802,18 @@ class AsyncSQLiteStorage(AsyncBaseStorage):
                 ) as cursor:
                     logs = []
                     async for row in cursor:
-                        logs.append({
-                            "trace_id": row[0],
-                            "timestamp": row[1],
-                            "context_key": row[2],
-                            "candidate_name": row[3],
-                            "reward": float(row[4]) if row[4] is not None else None,
-                        })
+                        logs.append(
+                            {
+                                "trace_id": row[0],
+                                "timestamp": row[1],
+                                "context_key": row[2],
+                                "candidate_name": row[3],
+                                "reward": float(row[4]) if row[4] is not None else None,
+                            }
+                        )
                     return logs
-        return await self._execute_with_retry(_run)
 
+        return await self._execute_with_retry(_run)
 
 
 class AsyncRedisStorage(AsyncBaseStorage):
@@ -2438,7 +2850,9 @@ class AsyncRedisStorage(AsyncBaseStorage):
     def _get_key(self, context_key: str) -> str:
         return f"{self.prefix}{context_key}"
 
-    async def get_candidate_params(self, context_key: str, candidate_name: str) -> Tuple[float, float]:
+    async def get_candidate_params(
+        self, context_key: str, candidate_name: str
+    ) -> Tuple[float, float]:
         key = self._get_key(context_key)
         alpha_val = await self.client.hget(key, f"{candidate_name}:alpha")
         beta_val = await self.client.hget(key, f"{candidate_name}:beta")
@@ -2447,7 +2861,9 @@ class AsyncRedisStorage(AsyncBaseStorage):
         beta = float(beta_val) if beta_val is not None else 1.0
         return alpha, beta
 
-    async def ahas_candidate_params(self, context_key: str, candidate_name: str) -> bool:
+    async def ahas_candidate_params(
+        self, context_key: str, candidate_name: str
+    ) -> bool:
         key = self._get_key(context_key)
         return bool(await self.client.hexists(key, f"{candidate_name}:alpha"))
 
@@ -2500,7 +2916,9 @@ class AsyncRedisStorage(AsyncBaseStorage):
                     data = json.loads(serialized)
                     mapping = {k: json.dumps(v) for k, v in data.items()}
                     if mapping:
-                        await self.client.hset(f"{self.prefix}context_vectors", mapping=mapping)
+                        await self.client.hset(
+                            f"{self.prefix}context_vectors", mapping=mapping
+                        )
                     return data
                 except Exception:
                     pass
@@ -2515,7 +2933,7 @@ class AsyncRedisStorage(AsyncBaseStorage):
         await self.client.hset(
             f"{self.prefix}context_vectors",
             key=context_key,
-            value=json.dumps(list(vector))
+            value=json.dumps(list(vector)),
         )
 
     async def aget_linear_params(
@@ -2542,6 +2960,7 @@ class AsyncRedisStorage(AsyncBaseStorage):
         diagonal: bool,
     ) -> Tuple[np.ndarray, np.ndarray]:
         import redis
+
         d = len(x_augmented)
         key_prec = f"{self.prefix}linear:{candidate_name}:precision"
         key_rew = f"{self.prefix}linear:{candidate_name}:reward"
@@ -2555,7 +2974,11 @@ class AsyncRedisStorage(AsyncBaseStorage):
                     precision = np.array(json.loads(prec_val), dtype=np.float32)
                     reward_vector = np.array(json.loads(rew_val), dtype=np.float32)
                 else:
-                    precision = lambda_val * np.ones(d, dtype=np.float32) if diagonal else lambda_val * np.eye(d, dtype=np.float32)
+                    precision = (
+                        lambda_val * np.ones(d, dtype=np.float32)
+                        if diagonal
+                        else lambda_val * np.eye(d, dtype=np.float32)
+                    )
                     reward_vector = np.zeros(d, dtype=np.float32)
                     reward_vector[-1] = lambda_val * prior_p
 
@@ -2563,11 +2986,27 @@ class AsyncRedisStorage(AsyncBaseStorage):
                 prior_reward_vector[-1] = lambda_val * prior_p
 
                 if diagonal:
-                    new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32) + (x_augmented ** 2)
+                    new_precision = (
+                        decay_factor * precision
+                        + (1.0 - decay_factor)
+                        * lambda_val
+                        * np.ones(d, dtype=np.float32)
+                        + (x_augmented**2)
+                    )
                 else:
-                    new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32) + np.outer(x_augmented, x_augmented)
+                    new_precision = (
+                        decay_factor * precision
+                        + (1.0 - decay_factor)
+                        * lambda_val
+                        * np.eye(d, dtype=np.float32)
+                        + np.outer(x_augmented, x_augmented)
+                    )
 
-                new_reward_vector = decay_factor * reward_vector + (1.0 - decay_factor) * prior_reward_vector + reward * x_augmented
+                new_reward_vector = (
+                    decay_factor * reward_vector
+                    + (1.0 - decay_factor) * prior_reward_vector
+                    + reward * x_augmented
+                )
 
                 pipe.multi()
                 pipe.set(key_prec, json.dumps(new_precision.tolist()))
@@ -2587,7 +3026,7 @@ class AsyncRedisStorage(AsyncBaseStorage):
             key = self._get_key(context_key)
             pipe.hget(key, f"{candidate_name}:alpha")
             pipe.hget(key, f"{candidate_name}:beta")
-        
+
         results_raw = await pipe.execute()
         results = {}
         for idx, (context_key, candidate_name) in enumerate(keys):
@@ -2662,11 +3101,12 @@ class AsyncRedisStorage(AsyncBaseStorage):
         if not updates:
             return []
         import redis
+
         candidate_names = list(set([item[0] for item in updates]))
         keys_prec = [f"{self.prefix}linear:{c}:precision" for c in candidate_names]
         keys_rew = [f"{self.prefix}linear:{c}:reward" for c in candidate_names]
         all_keys = keys_prec + keys_rew
-        
+
         pipe = self.client.pipeline()
         while True:
             try:
@@ -2676,7 +3116,7 @@ class AsyncRedisStorage(AsyncBaseStorage):
                 for k in keys_rew:
                     pipe.get(k)
                 raw_vals = await pipe.execute()
-                
+
                 current_vals = {}
                 num_cands = len(candidate_names)
                 for idx, c in enumerate(candidate_names):
@@ -2686,15 +3126,27 @@ class AsyncRedisStorage(AsyncBaseStorage):
                         precision = np.array(json.loads(prec_val), dtype=np.float32)
                         reward_vector = np.array(json.loads(rew_val), dtype=np.float32)
                         current_vals[c] = (precision, reward_vector)
-                
+
                 results = []
-                for candidate_name, decay_factor, reward, x_augmented, lambda_val, prior_p, diagonal in updates:
+                for (
+                    candidate_name,
+                    decay_factor,
+                    reward,
+                    x_augmented,
+                    lambda_val,
+                    prior_p,
+                    diagonal,
+                ) in updates:
                     d = len(x_augmented)
                     val = current_vals.get(candidate_name)
                     if val is not None:
                         precision, reward_vector = val
                     else:
-                        precision = lambda_val * np.ones(d, dtype=np.float32) if diagonal else lambda_val * np.eye(d, dtype=np.float32)
+                        precision = (
+                            lambda_val * np.ones(d, dtype=np.float32)
+                            if diagonal
+                            else lambda_val * np.eye(d, dtype=np.float32)
+                        )
                         reward_vector = np.zeros(d, dtype=np.float32)
                         reward_vector[-1] = lambda_val * prior_p
 
@@ -2702,19 +3154,39 @@ class AsyncRedisStorage(AsyncBaseStorage):
                     prior_reward_vector[-1] = lambda_val * prior_p
 
                     if diagonal:
-                        new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.ones(d, dtype=np.float32) + (x_augmented ** 2)
+                        new_precision = (
+                            decay_factor * precision
+                            + (1.0 - decay_factor)
+                            * lambda_val
+                            * np.ones(d, dtype=np.float32)
+                            + (x_augmented**2)
+                        )
                     else:
-                        new_precision = decay_factor * precision + (1.0 - decay_factor) * lambda_val * np.eye(d, dtype=np.float32) + np.outer(x_augmented, x_augmented)
+                        new_precision = (
+                            decay_factor * precision
+                            + (1.0 - decay_factor)
+                            * lambda_val
+                            * np.eye(d, dtype=np.float32)
+                            + np.outer(x_augmented, x_augmented)
+                        )
 
-                    new_reward_vector = decay_factor * reward_vector + (1.0 - decay_factor) * prior_reward_vector + reward * x_augmented
+                    new_reward_vector = (
+                        decay_factor * reward_vector
+                        + (1.0 - decay_factor) * prior_reward_vector
+                        + reward * x_augmented
+                    )
 
                     current_vals[candidate_name] = (new_precision, new_reward_vector)
                     results.append((np.copy(new_precision), np.copy(new_reward_vector)))
-                
+
                 pipe.multi()
                 for c, (prec, rew) in current_vals.items():
-                    pipe.set(f"{self.prefix}linear:{c}:precision", json.dumps(prec.tolist()))
-                    pipe.set(f"{self.prefix}linear:{c}:reward", json.dumps(rew.tolist()))
+                    pipe.set(
+                        f"{self.prefix}linear:{c}:precision", json.dumps(prec.tolist())
+                    )
+                    pipe.set(
+                        f"{self.prefix}linear:{c}:reward", json.dumps(rew.tolist())
+                    )
                 await pipe.execute()
                 return results
             except redis.WatchError:
@@ -2725,22 +3197,23 @@ class AsyncRedisStorage(AsyncBaseStorage):
             return
         pipe = self.client.pipeline()
         for k, v in vectors.items():
-            pipe.hset(
-                f"{self.prefix}context_vectors",
-                key=k,
-                value=json.dumps(list(v))
-            )
+            pipe.hset(f"{self.prefix}context_vectors", key=k, value=json.dumps(list(v)))
         await pipe.execute()
 
-    async def log_selection(self, trace_id: str, context_key: str, candidate_name: str) -> None:
+    async def log_selection(
+        self, trace_id: str, context_key: str, candidate_name: str
+    ) -> None:
         timestamp = datetime.now(timezone.utc).isoformat()
         key = f"{self.prefix}log:{trace_id}"
-        await self.client.hset(key, mapping={
-            "trace_id": trace_id,
-            "timestamp": timestamp,
-            "context_key": context_key,
-            "candidate_name": candidate_name,
-        })
+        await self.client.hset(
+            key,
+            mapping={
+                "trace_id": trace_id,
+                "timestamp": timestamp,
+                "context_key": context_key,
+                "candidate_name": candidate_name,
+            },
+        )
         await self.client.sadd(f"{self.prefix}log_ids", trace_id)
 
     async def log_feedback(self, trace_id: str, reward: float) -> None:
@@ -2761,14 +3234,18 @@ class AsyncRedisStorage(AsyncBaseStorage):
                     k_str = k.decode("utf-8") if isinstance(k, bytes) else str(k)
                     v_str = v.decode("utf-8") if isinstance(v, bytes) else str(v)
                     decoded[k_str] = v_str
-                
-                logs.append({
-                    "trace_id": decoded.get("trace_id", tid_str),
-                    "timestamp": decoded.get("timestamp", ""),
-                    "context_key": decoded.get("context_key", ""),
-                    "candidate_name": decoded.get("candidate_name", ""),
-                    "reward": float(decoded["reward"]) if decoded.get("reward") is not None else None,
-                })
+
+                logs.append(
+                    {
+                        "trace_id": decoded.get("trace_id", tid_str),
+                        "timestamp": decoded.get("timestamp", ""),
+                        "context_key": decoded.get("context_key", ""),
+                        "candidate_name": decoded.get("candidate_name", ""),
+                        "reward": (
+                            float(decoded["reward"])
+                            if decoded.get("reward") is not None
+                            else None
+                        ),
+                    }
+                )
         return sorted(logs, key=lambda x: x["timestamp"])
-
-

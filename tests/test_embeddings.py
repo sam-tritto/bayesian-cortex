@@ -1,6 +1,7 @@
 import json
 import urllib.error
 from unittest.mock import MagicMock, patch
+
 import pytest
 
 from bayesian_cortex.embeddings import (
@@ -23,14 +24,14 @@ def test_gemini_embedder_missing_key():
 @patch("urllib.request.urlopen")
 def test_gemini_embedder_rest_success(mock_urlopen):
     mock_response = MagicMock()
-    mock_response.read.return_value = json.dumps({
-        "embedding": {
-            "values": [0.1, 0.2, 0.3]
-        }
-    }).encode("utf-8")
+    mock_response.read.return_value = json.dumps(
+        {"embedding": {"values": [0.1, 0.2, 0.3]}}
+    ).encode("utf-8")
     mock_urlopen.return_value.__enter__.return_value = mock_response
 
-    embedder = GeminiEmbedder(api_key="fake-gemini-key", model_name="text-embedding-004")
+    embedder = GeminiEmbedder(
+        api_key="fake-gemini-key", model_name="text-embedding-004"
+    )
     result = embedder.embed_query("hello")
 
     assert result == [0.1, 0.2, 0.3]
@@ -38,16 +39,15 @@ def test_gemini_embedder_rest_success(mock_urlopen):
     # Verify correct url request is constructed
     args, kwargs = mock_urlopen.call_args
     req = args[0]
-    assert req.full_url == "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=fake-gemini-key"
+    assert (
+        req.full_url
+        == "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=fake-gemini-key"
+    )
     assert req.method == "POST"
-    
+
     # Check body
     body_data = json.loads(req.data.decode("utf-8"))
-    assert body_data == {
-        "content": {
-            "parts": [{"text": "hello"}]
-        }
-    }
+    assert body_data == {"content": {"parts": [{"text": "hello"}]}}
 
 
 @patch("urllib.request.urlopen")
@@ -61,7 +61,10 @@ def test_gemini_embedder_rest_http_error(mock_urlopen):
     mock_urlopen.side_effect = error
 
     embedder = GeminiEmbedder(api_key="fake-key")
-    with pytest.raises(RuntimeError, match="Gemini API request failed with status 400: Invalid API key or model"):
+    with pytest.raises(
+        RuntimeError,
+        match="Gemini API request failed with status 400: Invalid API key or model",
+    ):
         embedder.embed_query("hello")
 
 
@@ -86,9 +89,7 @@ def test_gemini_embedder_legacy_sdk_client_dict():
     mock_client = MagicMock()
     # Delete .models attribute so it doesn't try new SDK path
     del mock_client.models
-    mock_client.embed_content.return_value = {
-        "embedding": [0.4, 0.5, 0.6]
-    }
+    mock_client.embed_content.return_value = {"embedding": [0.4, 0.5, 0.6]}
 
     embedder = GeminiEmbedder(client=mock_client, model_name="custom-model")
     result = embedder.embed_query("hello legacy dict")
@@ -103,9 +104,7 @@ def test_gemini_embedder_legacy_sdk_client_values_dict():
     # Test legacy google-generativeai style returning dict with values key
     mock_client = MagicMock()
     del mock_client.models
-    mock_client.embed_content.return_value = {
-        "embedding": {"values": [0.4, 0.5, 0.6]}
-    }
+    mock_client.embed_content.return_value = {"embedding": {"values": [0.4, 0.5, 0.6]}}
 
     embedder = GeminiEmbedder(client=mock_client, model_name="custom-model")
     result = embedder.embed_query("hello legacy dict values")
@@ -117,7 +116,7 @@ def test_gemini_embedder_legacy_sdk_client_object():
     # Test legacy SDK returning object with embedding list / embedding.values
     mock_client = MagicMock()
     del mock_client.models
-    
+
     mock_resp = MagicMock()
     mock_resp.embedding = [0.11, 0.22]
     mock_client.embed_content.return_value = mock_resp
@@ -131,7 +130,7 @@ def test_gemini_embedder_legacy_sdk_client_object():
 def test_gemini_embedder_legacy_sdk_client_object_values():
     mock_client = MagicMock()
     del mock_client.models
-    
+
     mock_resp = MagicMock()
     mock_resp.embedding.values = [0.33, 0.44]
     mock_client.embed_content.return_value = mock_resp
@@ -149,7 +148,9 @@ def test_gemini_embedder_invalid_client():
     del mock_client.embed_content
 
     embedder = GeminiEmbedder(client=mock_client)
-    with pytest.raises(ValueError, match="Provided client does not have embed_content method"):
+    with pytest.raises(
+        ValueError, match="Provided client does not have embed_content method"
+    ):
         embedder.embed_query("hello")
 
 
@@ -164,19 +165,15 @@ def test_openai_embedder_missing_key():
 @patch("urllib.request.urlopen")
 def test_openai_embedder_rest_success(mock_urlopen):
     mock_response = MagicMock()
-    mock_response.read.return_value = json.dumps({
-        "data": [
-            {
-                "embedding": [0.01, -0.02, 0.03]
-            }
-        ]
-    }).encode("utf-8")
+    mock_response.read.return_value = json.dumps(
+        {"data": [{"embedding": [0.01, -0.02, 0.03]}]}
+    ).encode("utf-8")
     mock_urlopen.return_value.__enter__.return_value = mock_response
 
     embedder = OpenAIEmbedder(
         api_key="fake-openai-key",
         model_name="text-embedding-3-large",
-        base_url="https://api.my-custom-proxy.com/v1"
+        base_url="https://api.my-custom-proxy.com/v1",
     )
     result = embedder.embed_query("openai test")
 
@@ -187,12 +184,9 @@ def test_openai_embedder_rest_success(mock_urlopen):
     assert req.full_url == "https://api.my-custom-proxy.com/v1/embeddings"
     assert req.headers["Authorization"] == "Bearer fake-openai-key"
     assert req.headers["Content-type"] == "application/json"  # urllib standardizes keys
-    
+
     body_data = json.loads(req.data.decode("utf-8"))
-    assert body_data == {
-        "input": "openai test",
-        "model": "text-embedding-3-large"
-    }
+    assert body_data == {"input": "openai test", "model": "text-embedding-3-large"}
 
 
 @patch("urllib.request.urlopen")
@@ -205,7 +199,10 @@ def test_openai_embedder_rest_http_error(mock_urlopen):
     mock_urlopen.side_effect = error
 
     embedder = OpenAIEmbedder(api_key="bad-key")
-    with pytest.raises(RuntimeError, match="OpenAI API request failed with status 401: Unauthorized API Key"):
+    with pytest.raises(
+        RuntimeError,
+        match="OpenAI API request failed with status 401: Unauthorized API Key",
+    ):
         embedder.embed_query("hello")
 
 
@@ -231,28 +228,42 @@ def test_openai_embedder_invalid_client():
     del mock_client.embeddings
 
     embedder = OpenAIEmbedder(client=mock_client)
-    with pytest.raises(ValueError, match="Provided client does not have embeddings.create method"):
+    with pytest.raises(
+        ValueError, match="Provided client does not have embeddings.create method"
+    ):
         embedder.embed_query("hello")
 
 
 def test_sqlite_vector_store_basic(tmp_path):
     db_file = str(tmp_path / "test_vectors.db")
     store = SQLiteVectorStore(db_path=db_file, dimension=3)
-    
+
     try:
         # Add contexts
         store.add_context("ctx_search", [1.0, 0.0, 0.0])
         store.add_context("ctx_math", [0.0, 1.0, 0.0])
 
         # Exact lookup
-        assert store.get_nearest_context([1.0, 0.0, 0.0], similarity_threshold=0.9) == "ctx_search"
-        assert store.get_nearest_context([0.0, 1.0, 0.0], similarity_threshold=0.9) == "ctx_math"
+        assert (
+            store.get_nearest_context([1.0, 0.0, 0.0], similarity_threshold=0.9)
+            == "ctx_search"
+        )
+        assert (
+            store.get_nearest_context([0.0, 1.0, 0.0], similarity_threshold=0.9)
+            == "ctx_math"
+        )
 
         # Close lookup
-        assert store.get_nearest_context([0.9, 0.1, 0.0], similarity_threshold=0.8) == "ctx_search"
+        assert (
+            store.get_nearest_context([0.9, 0.1, 0.0], similarity_threshold=0.8)
+            == "ctx_search"
+        )
 
         # Below threshold lookup
-        assert store.get_nearest_context([0.5, 0.5, 0.0], similarity_threshold=0.95) is None
+        assert (
+            store.get_nearest_context([0.5, 0.5, 0.0], similarity_threshold=0.95)
+            is None
+        )
     finally:
         store.close()
 
@@ -260,25 +271,33 @@ def test_sqlite_vector_store_basic(tmp_path):
 def test_sqlite_vector_store_overwrite(tmp_path):
     db_file = str(tmp_path / "test_overwrite.db")
     store = SQLiteVectorStore(db_path=db_file, dimension=3)
-    
+
     try:
         # Add a context
         store.add_context("ctx_key", [1.0, 0.0, 0.0])
-        assert store.get_nearest_context([1.0, 0.0, 0.0], similarity_threshold=0.9) == "ctx_key"
+        assert (
+            store.get_nearest_context([1.0, 0.0, 0.0], similarity_threshold=0.9)
+            == "ctx_key"
+        )
 
         # Overwrite with different vector
         store.add_context("ctx_key", [0.0, 1.0, 0.0])
-        
+
         # Verify it updated and no longer matches old vector
-        assert store.get_nearest_context([1.0, 0.0, 0.0], similarity_threshold=0.9) is None
-        assert store.get_nearest_context([0.0, 1.0, 0.0], similarity_threshold=0.9) == "ctx_key"
+        assert (
+            store.get_nearest_context([1.0, 0.0, 0.0], similarity_threshold=0.9) is None
+        )
+        assert (
+            store.get_nearest_context([0.0, 1.0, 0.0], similarity_threshold=0.9)
+            == "ctx_key"
+        )
     finally:
         store.close()
 
 
 def test_sqlite_vector_store_missing_sqlite_vec(tmp_path):
     db_file = str(tmp_path / "test_missing.db")
-    
+
     with patch.dict("sys.modules", {"sqlite_vec": None}):
         with pytest.raises(ImportError, match="sqlite-vec is required"):
             SQLiteVectorStore(db_path=db_file, dimension=3)
@@ -286,21 +305,23 @@ def test_sqlite_vector_store_missing_sqlite_vec(tmp_path):
 
 def test_router_with_sqlite_vector_store(tmp_path, mem_storage, det_embedder):
     from bayesian_cortex.router import BayesianRouter
-    
+
     db_file = str(tmp_path / "test_router_vec.db")
     vector_store = SQLiteVectorStore(db_path=db_file, dimension=2)
     storage = mem_storage
-    
+
     try:
         router = BayesianRouter(
             storage=storage,
             embedder=det_embedder,
             vector_store=vector_store,
-            similarity_threshold=0.85
+            similarity_threshold=0.85,
         )
-        
+
         # Routing first query
-        tool, trace_id = router.route_with_trace("find math help", ["tool_math", "tool_search"])
+        tool, trace_id = router.route_with_trace(
+            "find math help", ["tool_math", "tool_search"]
+        )
         context_key_1 = router._resolve_context_key("find math help")
         assert context_key_1.startswith("ctx_")
 
@@ -326,14 +347,9 @@ def test_anthropic_embedder_missing_key():
 @patch("urllib.request.urlopen")
 def test_anthropic_embedder_rest_success(mock_urlopen):
     mock_response = MagicMock()
-    mock_response.read.return_value = json.dumps({
-        "data": [
-            {
-                "embedding": [0.1, 0.2, 0.3],
-                "index": 0
-            }
-        ]
-    }).encode("utf-8")
+    mock_response.read.return_value = json.dumps(
+        {"data": [{"embedding": [0.1, 0.2, 0.3], "index": 0}]}
+    ).encode("utf-8")
     mock_urlopen.return_value.__enter__.return_value = mock_response
 
     embedder = AnthropicEmbedder(api_key="fake-voyage-key", model_name="voyage-3")
@@ -346,30 +362,22 @@ def test_anthropic_embedder_rest_success(mock_urlopen):
     assert req.full_url == "https://api.voyageai.com/v1/embeddings"
     assert req.method == "POST"
     assert req.headers["Authorization"] == "Bearer fake-voyage-key"
-    
+
     body_data = json.loads(req.data.decode("utf-8"))
-    assert body_data == {
-        "input": ["hello"],
-        "model": "voyage-3",
-        "input_type": "query"
-    }
+    assert body_data == {"input": ["hello"], "model": "voyage-3", "input_type": "query"}
 
 
 @patch("urllib.request.urlopen")
 def test_anthropic_embedder_rest_success_batch(mock_urlopen):
     mock_response = MagicMock()
-    mock_response.read.return_value = json.dumps({
-        "data": [
-            {
-                "embedding": [0.4, 0.5],
-                "index": 1
-            },
-            {
-                "embedding": [0.1, 0.2],
-                "index": 0
-            }
-        ]
-    }).encode("utf-8")
+    mock_response.read.return_value = json.dumps(
+        {
+            "data": [
+                {"embedding": [0.4, 0.5], "index": 1},
+                {"embedding": [0.1, 0.2], "index": 0},
+            ]
+        }
+    ).encode("utf-8")
     mock_urlopen.return_value.__enter__.return_value = mock_response
 
     embedder = AnthropicEmbedder(api_key="fake-voyage-key")
@@ -404,13 +412,9 @@ def test_cohere_embedder_missing_key():
 @patch("urllib.request.urlopen")
 def test_cohere_embedder_rest_success(mock_urlopen):
     mock_response = MagicMock()
-    mock_response.read.return_value = json.dumps({
-        "embeddings": {
-            "float": [
-                [0.5, 0.6, 0.7]
-            ]
-        }
-    }).encode("utf-8")
+    mock_response.read.return_value = json.dumps(
+        {"embeddings": {"float": [[0.5, 0.6, 0.7]]}}
+    ).encode("utf-8")
     mock_urlopen.return_value.__enter__.return_value = mock_response
 
     embedder = CohereEmbedder(api_key="fake-cohere-key")
@@ -422,13 +426,13 @@ def test_cohere_embedder_rest_success(mock_urlopen):
     req = args[0]
     assert req.full_url == "https://api.cohere.com/v2/embed"
     assert req.method == "POST"
-    
+
     body_data = json.loads(req.data.decode("utf-8"))
     assert body_data == {
         "model": "embed-english-v3.0",
         "texts": ["hello"],
         "input_type": "search_query",
-        "embedding_types": ["float"]
+        "embedding_types": ["float"],
     }
 
 
@@ -446,7 +450,7 @@ def test_cohere_embedder_sdk_client_v2():
         texts=["cohere sdk"],
         model="embed-english-v3.0",
         input_type="search_query",
-        embedding_types=["float"]
+        embedding_types=["float"],
     )
 
 
@@ -454,17 +458,14 @@ def test_cohere_embedder_sdk_client_v2():
 @patch("urllib.request.urlopen")
 def test_llamacpp_embedder_rest_success(mock_urlopen):
     mock_response = MagicMock()
-    mock_response.read.return_value = json.dumps({
-        "data": [
-            {
-                "embedding": [0.01, -0.02],
-                "index": 0
-            }
-        ]
-    }).encode("utf-8")
+    mock_response.read.return_value = json.dumps(
+        {"data": [{"embedding": [0.01, -0.02], "index": 0}]}
+    ).encode("utf-8")
     mock_urlopen.return_value.__enter__.return_value = mock_response
 
-    embedder = LlamaCppEmbedder(base_url="http://localhost:8080/v1", model_name="local-llama")
+    embedder = LlamaCppEmbedder(
+        base_url="http://localhost:8080/v1", model_name="local-llama"
+    )
     result = embedder.embed_query("hello")
 
     assert result == [0.01, -0.02]
@@ -472,12 +473,9 @@ def test_llamacpp_embedder_rest_success(mock_urlopen):
     args, kwargs = mock_urlopen.call_args
     req = args[0]
     assert req.full_url == "http://localhost:8080/v1/embeddings"
-    
+
     body_data = json.loads(req.data.decode("utf-8"))
-    assert body_data == {
-        "input": "hello",
-        "model": "local-llama"
-    }
+    assert body_data == {"input": "hello", "model": "local-llama"}
 
 
 @patch("urllib.request.urlopen")
@@ -485,17 +483,21 @@ def test_llamacpp_embedder_rest_fallback(mock_urlopen):
     mock_fp = MagicMock()
     mock_fp.read.return_value = b"Not Found"
     error = urllib.error.HTTPError(
-        url="http://localhost:8080/v1/embeddings", code=404, msg="Not Found", hdrs=None, fp=mock_fp
+        url="http://localhost:8080/v1/embeddings",
+        code=404,
+        msg="Not Found",
+        hdrs=None,
+        fp=mock_fp,
     )
-    
+
     mock_fb_response = MagicMock()
-    mock_fb_response.read.return_value = json.dumps({
-        "embedding": [0.88, 0.99]
-    }).encode("utf-8")
-    
+    mock_fb_response.read.return_value = json.dumps({"embedding": [0.88, 0.99]}).encode(
+        "utf-8"
+    )
+
     mock_context_manager = MagicMock()
     mock_context_manager.__enter__.return_value = mock_fb_response
-    
+
     mock_urlopen.side_effect = [error, mock_context_manager]
 
     embedder = LlamaCppEmbedder(base_url="http://localhost:8080/v1")
@@ -503,4 +505,3 @@ def test_llamacpp_embedder_rest_fallback(mock_urlopen):
 
     assert result == [0.88, 0.99]
     assert mock_urlopen.call_count == 2
-

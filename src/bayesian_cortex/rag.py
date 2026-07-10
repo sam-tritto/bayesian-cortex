@@ -3,17 +3,116 @@ from typing import Any, List, Optional, Union
 
 # Common English stop words to filter out before calculating faithfulness
 DEFAULT_STOP_WORDS = {
-    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", 
-    "is", "are", "was", "were", "be", "been", "this", "that", "it", "they", "i", "you", 
-    "he", "she", "we", "us", "them", "my", "your", "his", "her", "our", "their", "as", 
-    "by", "from", "into", "through", "during", "including", "until", "against", 
-    "among", "throughout", "despite", "towards", "upon", "concerning", "about", "above", 
-    "after", "before", "behind", "below", "between", "under", "within", "without", "will",
-    "would", "shall", "should", "can", "could", "may", "might", "must", "to", "from", "up",
-    "down", "in", "out", "on", "off", "over", "under", "again", "further", "then", "once",
-    "here", "there", "when", "where", "why", "how", "all", "any", "both", "each", "few",
-    "more", "most", "other", "some", "such", "no", "nor", "not", "only", "own", "same",
-    "so", "than", "too", "very", "s", "t", "can", "will", "just", "don", "should", "now"
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "but",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "of",
+    "with",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "this",
+    "that",
+    "it",
+    "they",
+    "i",
+    "you",
+    "he",
+    "she",
+    "we",
+    "us",
+    "them",
+    "my",
+    "your",
+    "his",
+    "her",
+    "our",
+    "their",
+    "as",
+    "by",
+    "from",
+    "into",
+    "through",
+    "during",
+    "including",
+    "until",
+    "against",
+    "among",
+    "throughout",
+    "despite",
+    "towards",
+    "upon",
+    "concerning",
+    "about",
+    "above",
+    "after",
+    "before",
+    "behind",
+    "below",
+    "between",
+    "under",
+    "within",
+    "without",
+    "will",
+    "would",
+    "shall",
+    "should",
+    "can",
+    "could",
+    "may",
+    "might",
+    "must",
+    "up",
+    "down",
+    "out",
+    "off",
+    "over",
+    "again",
+    "further",
+    "then",
+    "once",
+    "here",
+    "there",
+    "when",
+    "where",
+    "why",
+    "how",
+    "all",
+    "any",
+    "both",
+    "each",
+    "few",
+    "more",
+    "most",
+    "other",
+    "some",
+    "such",
+    "no",
+    "nor",
+    "not",
+    "only",
+    "own",
+    "same",
+    "so",
+    "than",
+    "too",
+    "very",
+    "s",
+    "t",
+    "just",
+    "don",
+    "now",
 }
 
 # Regex patterns indicating a citation failure or retrieval failure
@@ -33,7 +132,9 @@ DEFAULT_FALLBACK_PATTERNS = [
 ]
 
 
-def check_citation(response: str, fallback_patterns: Optional[List[str]] = None) -> bool:
+def check_citation(
+    response: str, fallback_patterns: Optional[List[str]] = None
+) -> bool:
     """
     Verify that the LLM did not return a standard fallback indicating information was missing.
 
@@ -49,19 +150,23 @@ def check_citation(response: str, fallback_patterns: Optional[List[str]] = None)
     if not response:
         return False
 
-    patterns = fallback_patterns if fallback_patterns is not None else DEFAULT_FALLBACK_PATTERNS
-    
+    patterns = (
+        fallback_patterns
+        if fallback_patterns is not None
+        else DEFAULT_FALLBACK_PATTERNS
+    )
+
     for pattern in patterns:
         if re.search(pattern, response, re.IGNORECASE):
             return False
-            
+
     return True
 
 
 def calculate_faithfulness(
-    response: str, 
-    source_chunks: Union[str, List[str]], 
-    stop_words: Optional[set] = None
+    response: str,
+    source_chunks: Union[str, List[str]],
+    stop_words: Optional[set] = None,
 ) -> float:
     """
     Calculate a lightweight token containment/overlap metric indicating how much of
@@ -73,7 +178,7 @@ def calculate_faithfulness(
         stop_words: Set of words to exclude from overlap checks. Defaults to a standard set.
 
     Returns:
-        float: A score between 0.0 and 1.0 representing faithfulness (percentage of unique 
+        float: A score between 0.0 and 1.0 representing faithfulness (percentage of unique
                non-stopword tokens in the response that exist in the sources).
     """
     if not response:
@@ -90,7 +195,7 @@ def calculate_faithfulness(
         return set(tokens)
 
     resp_tokens = tokenize(response)
-    
+
     # Filter out stop words
     exclude = stop_words if stop_words is not None else DEFAULT_STOP_WORDS
     resp_tokens = {t for t in resp_tokens if t not in exclude}
@@ -107,7 +212,7 @@ def calculate_faithfulness(
 
     # Intersect response tokens and source tokens
     overlap = resp_tokens.intersection(source_tokens)
-    
+
     return len(overlap) / len(resp_tokens)
 
 
@@ -116,7 +221,7 @@ def evaluate_rag_success(
     source_chunks: Union[str, List[str]],
     faithfulness_threshold: float = 0.5,
     fallback_patterns: Optional[List[str]] = None,
-    stop_words: Optional[set] = None
+    stop_words: Optional[set] = None,
 ) -> bool:
     """
     Automated check combining citation patterns and token overlap to assess RAG query success.
@@ -133,7 +238,7 @@ def evaluate_rag_success(
     """
     if not check_citation(response, fallback_patterns):
         return False
-        
+
     score = calculate_faithfulness(response, source_chunks, stop_words)
     return score >= faithfulness_threshold
 
@@ -144,21 +249,43 @@ def _map_ui_feedback_to_reward(value: Any) -> float:
     """
     if isinstance(value, bool):
         return 1.0 if value else 0.0
-        
+
     if isinstance(value, (int, float)):
         # Ensure we return a valid clamped reward
         val_float = float(value)
         if 0.0 <= val_float <= 1.0:
             return val_float
-        raise ValueError(f"Numerical UI feedback must be between 0.0 and 1.0, got: {value}")
-        
+        raise ValueError(
+            f"Numerical UI feedback must be between 0.0 and 1.0, got: {value}"
+        )
+
     if isinstance(value, str):
         val_lower = value.strip().lower()
-        if val_lower in ("thumbs_up", "thumbs-up", "thumbsup", "like", "upvote", "success", "yes", "true", "1"):
+        if val_lower in (
+            "thumbs_up",
+            "thumbs-up",
+            "thumbsup",
+            "like",
+            "upvote",
+            "success",
+            "yes",
+            "true",
+            "1",
+        ):
             return 1.0
-        if val_lower in ("thumbs_down", "thumbs-down", "thumbsdown", "dislike", "downvote", "failure", "no", "false", "0"):
+        if val_lower in (
+            "thumbs_down",
+            "thumbs-down",
+            "thumbsdown",
+            "dislike",
+            "downvote",
+            "failure",
+            "no",
+            "false",
+            "0",
+        ):
             return 0.0
-            
+
     raise ValueError(f"Unsupported UI feedback value: {value}")
 
 
@@ -179,7 +306,9 @@ def process_ui_feedback(router: Any, trace_id: str, feedback_value: Any) -> floa
     return reward
 
 
-async def aprocess_ui_feedback(router: Any, trace_id: str, feedback_value: Any) -> float:
+async def aprocess_ui_feedback(
+    router: Any, trace_id: str, feedback_value: Any
+) -> float:
     """
     Process client-side UI feedback (like thumbs up / down) and update the asynchronous router.
 

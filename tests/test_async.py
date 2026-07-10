@@ -2,15 +2,13 @@ import json
 import os
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
-import urllib.error
 
 import pytest
-import numpy as np
 
 from bayesian_cortex.embeddings import (
     AnthropicEmbedder,
-    AsyncVectorContextStore,
     AsyncSQLiteVectorStore,
+    AsyncVectorContextStore,
     CohereEmbedder,
     GeminiEmbedder,
     LlamaCppEmbedder,
@@ -19,8 +17,8 @@ from bayesian_cortex.embeddings import (
 from bayesian_cortex.router import AsyncBayesianRouter
 from bayesian_cortex.storage import (
     AsyncInMemoryStorage,
-    AsyncSQLiteStorage,
     AsyncRedisStorage,
+    AsyncSQLiteStorage,
 )
 
 
@@ -130,8 +128,7 @@ async def test_async_redis_storage():
     # Update params
     await storage.update_candidate_params("ctx_1", "tool_1", 12.0, 6.0)
     mock_client.hset.assert_called_with(
-        "bayesian_cortex:ctx_1",
-        mapping={"tool_1:alpha": "12.0", "tool_1:beta": "6.0"}
+        "bayesian_cortex:ctx_1", mapping={"tool_1:alpha": "12.0", "tool_1:beta": "6.0"}
     )
 
     # Decay & Update
@@ -140,7 +137,7 @@ async def test_async_redis_storage():
     assert new_b == 2.5
     mock_script.assert_called_with(
         keys=["bayesian_cortex:ctx_1"],
-        args=["tool_1:alpha", "tool_1:beta", "0.9", "1.0"]
+        args=["tool_1:alpha", "tool_1:beta", "0.9", "1.0"],
     )
 
     # Metadata
@@ -198,7 +195,9 @@ async def test_async_router_exact_match(async_mem_storage):
     storage = async_mem_storage
     router = AsyncBayesianRouter(storage=storage, decay_factor=0.95)
 
-    candidate_name = await router.aroute("web_search_query", ["search_api", "fallback_api"])
+    candidate_name = await router.aroute(
+        "web_search_query", ["search_api", "fallback_api"]
+    )
     assert candidate_name in ["search_api", "fallback_api"]
 
     # feedback
@@ -215,7 +214,9 @@ async def test_async_router_with_async_embedder(async_mem_storage):
     embedder = AsyncMockEmbedder()
     router = AsyncBayesianRouter(storage=storage, embedder=embedder)
 
-    tool, trace = await router.aroute_with_trace("find math help", ["tool_math", "tool_search"])
+    tool, trace = await router.aroute_with_trace(
+        "find math help", ["tool_math", "tool_search"]
+    )
     context_key_1 = await router._resolve_context_key("find math help")
     assert context_key_1.startswith("ctx_")
 
@@ -229,7 +230,9 @@ async def test_async_router_with_sync_embedder(async_mem_storage):
     embedder = SyncMockEmbedder()
     router = AsyncBayesianRouter(storage=storage, embedder=embedder)
 
-    tool, trace = await router.aroute_with_trace("find math help", ["tool_math", "tool_search"])
+    tool, trace = await router.aroute_with_trace(
+        "find math help", ["tool_math", "tool_search"]
+    )
     context_key_1 = await router._resolve_context_key("find math help")
     assert context_key_1.startswith("ctx_")
 
@@ -243,7 +246,7 @@ async def test_async_router_trace_feedback(async_mem_storage):
     assert chosen_candidate == "tool_x"
 
     await router.afeedback_by_trace(trace_id, success=True)
-    
+
     key = await router._resolve_context_key("context_a")
     alpha, beta = await storage.get_candidate_params(key, "tool_x")
     assert alpha == 2.0
@@ -263,9 +266,10 @@ async def test_async_router_priors(async_mem_storage):
 @pytest.mark.anyio
 async def test_async_router_fallbacks(monkeypatch, async_mem_storage):
     storage = async_mem_storage
-    
+
     async def mock_get_candidate_params(context_key, candidate_name):
         raise RuntimeError("DB failure")
+
     monkeypatch.setattr(storage, "get_candidate_params", mock_get_candidate_params)
 
     router = AsyncBayesianRouter(storage=storage, fallback_candidate="fallback")
@@ -278,11 +282,7 @@ async def test_async_router_fallbacks(monkeypatch, async_mem_storage):
 async def test_async_gemini_embedder_rest(mock_httpx_client):
     # Mock httpx AsyncClient behavior
     mock_response = MagicMock()
-    mock_response.json.return_value = {
-        "embedding": {
-            "values": [0.1, 0.2, 0.3]
-        }
-    }
+    mock_response.json.return_value = {"embedding": {"values": [0.1, 0.2, 0.3]}}
     mock_response.raise_for_status = MagicMock()
 
     # Async context manager setup
@@ -300,13 +300,7 @@ async def test_async_gemini_embedder_rest(mock_httpx_client):
 @patch("httpx.AsyncClient")
 async def test_async_openai_embedder_rest(mock_httpx_client):
     mock_response = MagicMock()
-    mock_response.json.return_value = {
-        "data": [
-            {
-                "embedding": [0.01, -0.02, 0.03]
-            }
-        ]
-    }
+    mock_response.json.return_value = {"data": [{"embedding": [0.01, -0.02, 0.03]}]}
     mock_response.raise_for_status = MagicMock()
 
     mock_client_instance = AsyncMock()
@@ -322,47 +316,50 @@ async def test_async_openai_embedder_rest(mock_httpx_client):
 @pytest.mark.anyio
 async def test_async_router_signed_trace_ids(async_mem_storage):
     import pytest
+
     storage = async_mem_storage
-    
+
     # 1. Custom secret key (str)
     router = AsyncBayesianRouter(storage=storage, secret_key="my_super_secret_key")
     chosen, trace_id = await router.aroute_with_trace("query", ["tool_a"])
     assert "." in trace_id
-    
+
     # Decode and verify it succeeds
     ctx_key, candidate_name = router._decode_trace_id(trace_id)
     assert candidate_name == "tool_a"
-    
+
     # Verify with another router using the same key succeeds
     router2 = AsyncBayesianRouter(storage=storage, secret_key="my_super_secret_key")
     ctx_key2, candidate_name2 = router2._decode_trace_id(trace_id)
     assert candidate_name2 == "tool_a"
-    
+
     # Verify with another router using a different key fails
     router3 = AsyncBayesianRouter(storage=storage, secret_key="different_secret_key")
     with pytest.raises(ValueError, match="Invalid or corrupted trace ID"):
         router3._decode_trace_id(trace_id)
-        
+
     # Tampering with payload fails
     payload_part, sig_part = trace_id.split(".")
-    import json
     import base64
+
     payload_json = json.loads(base64.urlsafe_b64decode(payload_part).decode("utf-8"))
     payload_json["tool"] = "tool_b"  # forged
-    tampered_payload_b64 = base64.urlsafe_b64encode(json.dumps(payload_json).encode("utf-8")).decode("utf-8")
+    tampered_payload_b64 = base64.urlsafe_b64encode(
+        json.dumps(payload_json).encode("utf-8")
+    ).decode("utf-8")
     tampered_trace_id = f"{tampered_payload_b64}.{sig_part}"
-    
+
     with pytest.raises(ValueError, match="Invalid or corrupted trace ID"):
         router._decode_trace_id(tampered_trace_id)
-        
+
     # Missing signature separator fails
     with pytest.raises(ValueError, match="Invalid or corrupted trace ID"):
         router._decode_trace_id(payload_part)
-        
+
     # Random key auto-generation works
     router_random1 = AsyncBayesianRouter(storage=storage)
     router_random2 = AsyncBayesianRouter(storage=storage)
-    
+
     _, trace_id_rand = await router_random1.aroute_with_trace("query", ["tool_a"])
     # Decoding with same router succeeds
     assert router_random1._decode_trace_id(trace_id_rand)[1] == "tool_a"
@@ -374,77 +371,78 @@ async def test_async_router_signed_trace_ids(async_mem_storage):
 @pytest.mark.anyio
 async def test_async_router_contextual_priors(async_mem_storage):
     storage = async_mem_storage
-    
+
     contextual_priors = [
         {
             "pattern": r"math|calculator|sum",
-            "priors": {
-                "calculator": (99.0, 1.0),
-                "search": (1.0, 99.0)
-            }
+            "priors": {"calculator": (99.0, 1.0), "search": (1.0, 99.0)},
         },
         {
             "reference_context": "perform general web search query",
-            "priors": {
-                "calculator": (1.0, 99.0),
-                "search": (99.0, 1.0)
-            }
-        }
+            "priors": {"calculator": (1.0, 99.0), "search": (99.0, 1.0)},
+        },
     ]
-    
+
     embedder = SyncMockEmbedder()
-    
+
     router = AsyncBayesianRouter(
         storage=storage,
         embedder=embedder,
         contextual_priors=contextual_priors,
-        similarity_threshold=0.85
+        similarity_threshold=0.85,
     )
 
     # Test Regex Match
-    prior_calc_alpha, prior_calc_beta = await router.get_prior("solve a math sum", "calculator")
+    prior_calc_alpha, prior_calc_beta = await router.get_prior(
+        "solve a math sum", "calculator"
+    )
     assert prior_calc_alpha == 99.0
     assert prior_calc_beta == 1.0
 
-    prior_search_alpha, prior_search_beta = await router.get_prior("solve a math sum", "search")
+    prior_search_alpha, prior_search_beta = await router.get_prior(
+        "solve a math sum", "search"
+    )
     assert prior_search_alpha == 1.0
     assert prior_search_beta == 99.0
 
     # Test Reference Context Embedding Match
-    prior_search_alpha2, prior_search_beta2 = await router.get_prior("search for weather", "search")
+    prior_search_alpha2, prior_search_beta2 = await router.get_prior(
+        "search for weather", "search"
+    )
     assert prior_search_alpha2 == 99.0
     assert prior_search_beta2 == 1.0
 
     # Test routing with contextual priors (Thompson sampling cold start)
     storage_clean = AsyncInMemoryStorage()
     router_clean = AsyncBayesianRouter(
-        storage=storage_clean,
-        embedder=embedder,
-        contextual_priors=contextual_priors
+        storage=storage_clean, embedder=embedder, contextual_priors=contextual_priors
     )
     chosen = await router_clean.aroute("solve a math sum", ["calculator", "search"])
     assert chosen == "calculator"
-    
+
     # Verify parameter seeding in storage
     key = await router_clean._resolve_context_key("solve a math sum")
-    alpha_stored, beta_stored = await storage_clean.get_candidate_params(key, "calculator")
+    alpha_stored, beta_stored = await storage_clean.get_candidate_params(
+        key, "calculator"
+    )
     assert alpha_stored == 99.0
     assert beta_stored == 1.0
 
     # Route batch
     storage_batch = AsyncInMemoryStorage()
     router_batch = AsyncBayesianRouter(
-        storage=storage_batch,
-        embedder=embedder,
-        contextual_priors=contextual_priors
+        storage=storage_batch, embedder=embedder, contextual_priors=contextual_priors
     )
-    results = await router_batch.aroute_batch(["solve a math sum", "search for weather"], ["calculator", "search"])
+    results = await router_batch.aroute_batch(
+        ["solve a math sum", "search for weather"], ["calculator", "search"]
+    )
     assert results == ["calculator", "search"]
 
 
 @pytest.mark.anyio
 async def test_async_sqlite_storage_concurrency():
     import asyncio
+
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
         db_path = tmp.name
 
@@ -457,13 +455,17 @@ async def test_async_sqlite_storage_concurrency():
                 context_key = f"ctx_{task_id}_{i}"
                 candidate_name = f"tool_{i}"
                 # Mix of reads, writes, and decay/updates
-                await storage.update_candidate_params(context_key, candidate_name, float(task_id), 1.0)
+                await storage.update_candidate_params(
+                    context_key, candidate_name, float(task_id), 1.0
+                )
                 a, b = await storage.get_candidate_params(context_key, candidate_name)
                 assert a == float(task_id)
                 assert b == 1.0
-                
+
                 await storage.decay_and_update(context_key, candidate_name, 0.9, 1.0)
-                await storage.log_selection(f"trace_{task_id}_{i}", context_key, candidate_name)
+                await storage.log_selection(
+                    f"trace_{task_id}_{i}", context_key, candidate_name
+                )
                 await storage.log_feedback(f"trace_{task_id}_{i}", 1.0)
 
         # Run 20 tasks concurrently (each doing 10 cycles, total 200 writes/decays/selections)
@@ -488,12 +490,7 @@ async def test_async_sqlite_storage_concurrency():
 async def test_async_anthropic_embedder_rest(mock_httpx_client):
     mock_response = MagicMock()
     mock_response.json.return_value = {
-        "data": [
-            {
-                "embedding": [0.11, 0.22, 0.33],
-                "index": 0
-            }
-        ]
+        "data": [{"embedding": [0.11, 0.22, 0.33], "index": 0}]
     }
     mock_response.raise_for_status = MagicMock()
 
@@ -511,13 +508,7 @@ async def test_async_anthropic_embedder_rest(mock_httpx_client):
 @patch("httpx.AsyncClient")
 async def test_async_cohere_embedder_rest(mock_httpx_client):
     mock_response = MagicMock()
-    mock_response.json.return_value = {
-        "embeddings": {
-            "float": [
-                [0.55, 0.66]
-            ]
-        }
-    }
+    mock_response.json.return_value = {"embeddings": {"float": [[0.55, 0.66]]}}
     mock_response.raise_for_status = MagicMock()
 
     mock_client_instance = AsyncMock()
@@ -535,12 +526,7 @@ async def test_async_cohere_embedder_rest(mock_httpx_client):
 async def test_async_llamacpp_embedder_rest(mock_httpx_client):
     mock_response = MagicMock()
     mock_response.json.return_value = {
-        "data": [
-            {
-                "embedding": [0.1, 0.2, 0.3],
-                "index": 0
-            }
-        ]
+        "data": [{"embedding": [0.1, 0.2, 0.3], "index": 0}]
     }
     mock_response.raise_for_status = MagicMock()
 
@@ -552,5 +538,3 @@ async def test_async_llamacpp_embedder_rest(mock_httpx_client):
     result = await embedder.aembed_query("hello async llamacpp")
     assert result == [0.1, 0.2, 0.3]
     mock_client_instance.post.assert_called_once()
-
-
