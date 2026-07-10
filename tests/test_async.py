@@ -8,9 +8,12 @@ import pytest
 import numpy as np
 
 from bayesian_cortex.embeddings import (
+    AnthropicEmbedder,
     AsyncVectorContextStore,
     AsyncSQLiteVectorStore,
+    CohereEmbedder,
     GeminiEmbedder,
+    LlamaCppEmbedder,
     OpenAIEmbedder,
 )
 from bayesian_cortex.router import AsyncBayesianRouter
@@ -477,5 +480,77 @@ async def test_async_sqlite_storage_concurrency():
     finally:
         if os.path.exists(db_path):
             os.remove(db_path)
+
+
+# Async embedder tests for Anthropic, Cohere, Llama.cpp
+@pytest.mark.anyio
+@patch("httpx.AsyncClient")
+async def test_async_anthropic_embedder_rest(mock_httpx_client):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "data": [
+            {
+                "embedding": [0.11, 0.22, 0.33],
+                "index": 0
+            }
+        ]
+    }
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client_instance = AsyncMock()
+    mock_client_instance.post.return_value = mock_response
+    mock_httpx_client.return_value.__aenter__.return_value = mock_client_instance
+
+    embedder = AnthropicEmbedder(api_key="fake-voyage-key")
+    result = await embedder.aembed_query("hello async voyage")
+    assert result == [0.11, 0.22, 0.33]
+    mock_client_instance.post.assert_called_once()
+
+
+@pytest.mark.anyio
+@patch("httpx.AsyncClient")
+async def test_async_cohere_embedder_rest(mock_httpx_client):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "embeddings": {
+            "float": [
+                [0.55, 0.66]
+            ]
+        }
+    }
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client_instance = AsyncMock()
+    mock_client_instance.post.return_value = mock_response
+    mock_httpx_client.return_value.__aenter__.return_value = mock_client_instance
+
+    embedder = CohereEmbedder(api_key="fake-cohere-key")
+    result = await embedder.aembed_query("hello async cohere")
+    assert result == [0.55, 0.66]
+    mock_client_instance.post.assert_called_once()
+
+
+@pytest.mark.anyio
+@patch("httpx.AsyncClient")
+async def test_async_llamacpp_embedder_rest(mock_httpx_client):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "data": [
+            {
+                "embedding": [0.1, 0.2, 0.3],
+                "index": 0
+            }
+        ]
+    }
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client_instance = AsyncMock()
+    mock_client_instance.post.return_value = mock_response
+    mock_httpx_client.return_value.__aenter__.return_value = mock_client_instance
+
+    embedder = LlamaCppEmbedder(base_url="http://localhost:8080/v1")
+    result = await embedder.aembed_query("hello async llamacpp")
+    assert result == [0.1, 0.2, 0.3]
+    mock_client_instance.post.assert_called_once()
 
 

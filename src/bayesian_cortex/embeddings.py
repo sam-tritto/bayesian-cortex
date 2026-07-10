@@ -985,3 +985,741 @@ class AsyncSQLiteVectorStore:
                 await self._conn.close()
                 self._conn = None
 
+
+class AnthropicEmbedder:
+    """
+    Lightweight, API-driven embedder that routes to Voyage AI (Anthropic's official embedding partner).
+    Can be used via raw HTTP requests (using standard urllib) or via an optionally provided client SDK.
+    """
+
+    def __init__(
+        self,
+        model_name: str = "voyage-3",
+        api_key: Optional[str] = None,
+        base_url: str = "https://api.voyageai.com/v1",
+        client: Optional[Any] = None,
+    ) -> None:
+        self.model_name = model_name
+        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("VOYAGE_API_KEY")
+        self.base_url = base_url.rstrip("/")
+        self.client = client
+
+    def embed_query(self, text: str) -> Sequence[float]:
+        if self.client is not None:
+            if hasattr(self.client, "embed"):
+                resp = self.client.embed([text], model=self.model_name, input_type="query")
+                if hasattr(resp, "embeddings") and len(resp.embeddings) > 0:
+                    return [float(x) for x in resp.embeddings[0]]
+            raise ValueError("Provided client does not have embed method or expected structure.")
+
+        if not self.api_key:
+            raise ValueError(
+                "Anthropic/Voyage API key is required. Pass it via api_key or set the ANTHROPIC_API_KEY or VOYAGE_API_KEY environment variable."
+            )
+
+        url = f"{self.base_url}/embeddings"
+        payload = {
+            "input": [text],
+            "model": self.model_name,
+            "input_type": "query",
+        }
+        
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+        
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                resp_data = json.loads(response.read().decode("utf-8"))
+                if "data" in resp_data and len(resp_data["data"]) > 0 and "embedding" in resp_data["data"][0]:
+                    return [float(x) for x in resp_data["data"][0]["embedding"]]
+                raise ValueError(f"Unexpected response structure from Voyage API: {resp_data}")
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8")
+            raise RuntimeError(f"Voyage API request failed with status {e.code}: {err_body}") from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to communicate with Voyage API: {e}") from e
+
+    async def aembed_query(self, text: str) -> Sequence[float]:
+        if self.client is not None:
+            if hasattr(self.client, "embed"):
+                func = self.client.embed
+                if asyncio.iscoroutinefunction(func):
+                    resp = await func([text], model=self.model_name, input_type="query")
+                else:
+                    resp = func([text], model=self.model_name, input_type="query")
+                if hasattr(resp, "embeddings") and len(resp.embeddings) > 0:
+                    return [float(x) for x in resp.embeddings[0]]
+            raise ValueError("Provided client does not have embed method or expected structure.")
+
+        if not self.api_key:
+            raise ValueError(
+                "Anthropic/Voyage API key is required. Pass it via api_key or set the ANTHROPIC_API_KEY or VOYAGE_API_KEY environment variable."
+            )
+
+        url = f"{self.base_url}/embeddings"
+        payload = {
+            "input": [text],
+            "model": self.model_name,
+            "input_type": "query",
+        }
+        
+        try:
+            import httpx
+        except ImportError:
+            raise ImportError(
+                "httpx is required for async embedding calls. "
+                "Please install it with: pip install httpx"
+            )
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as httpx_client:
+                response = await httpx_client.post(
+                    url,
+                    json=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {self.api_key}",
+                    }
+                )
+                response.raise_for_status()
+                resp_data = response.json()
+                if "data" in resp_data and len(resp_data["data"]) > 0 and "embedding" in resp_data["data"][0]:
+                    return [float(x) for x in resp_data["data"][0]["embedding"]]
+                raise ValueError(f"Unexpected response structure from Voyage API: {resp_data}")
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"Voyage API request failed with status {e.response.status_code}: {e.response.text}") from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to communicate with Voyage API: {e}") from e
+
+    def embed_queries(self, texts: List[str]) -> List[Sequence[float]]:
+        if not texts:
+            return []
+        if self.client is not None:
+            if hasattr(self.client, "embed"):
+                resp = self.client.embed(texts, model=self.model_name, input_type="document")
+                if hasattr(resp, "embeddings"):
+                    return [[float(x) for x in emb] for emb in resp.embeddings]
+            raise ValueError("Provided client does not have embed method or expected structure.")
+
+        if not self.api_key:
+            raise ValueError(
+                "Anthropic/Voyage API key is required. Pass it via api_key or set the ANTHROPIC_API_KEY or VOYAGE_API_KEY environment variable."
+            )
+
+        url = f"{self.base_url}/embeddings"
+        payload = {
+            "input": texts,
+            "model": self.model_name,
+            "input_type": "document",
+        }
+        
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+        
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                resp_data = json.loads(response.read().decode("utf-8"))
+                if "data" in resp_data:
+                    sorted_data = sorted(resp_data["data"], key=lambda x: x.get("index", 0))
+                    return [[float(x) for x in item["embedding"]] for item in sorted_data]
+                raise ValueError(f"Unexpected response structure from Voyage API: {resp_data}")
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8")
+            raise RuntimeError(f"Voyage API request failed with status {e.code}: {err_body}") from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to communicate with Voyage API: {e}") from e
+
+    async def aembed_queries(self, texts: List[str]) -> List[Sequence[float]]:
+        if not texts:
+            return []
+        if self.client is not None:
+            if hasattr(self.client, "embed"):
+                func = self.client.embed
+                if asyncio.iscoroutinefunction(func):
+                    resp = await func(texts, model=self.model_name, input_type="document")
+                else:
+                    resp = func(texts, model=self.model_name, input_type="document")
+                if hasattr(resp, "embeddings"):
+                    return [[float(x) for x in emb] for emb in resp.embeddings]
+            raise ValueError("Provided client does not have embed method or expected structure.")
+
+        if not self.api_key:
+            raise ValueError(
+                "Anthropic/Voyage API key is required. Pass it via api_key or set the ANTHROPIC_API_KEY or VOYAGE_API_KEY environment variable."
+            )
+
+        url = f"{self.base_url}/embeddings"
+        payload = {
+            "input": texts,
+            "model": self.model_name,
+            "input_type": "document",
+        }
+        
+        try:
+            import httpx
+        except ImportError:
+            raise ImportError(
+                "httpx is required for async embedding calls. "
+                "Please install it with: pip install httpx"
+            )
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as httpx_client:
+                response = await httpx_client.post(
+                    url,
+                    json=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {self.api_key}",
+                    }
+                )
+                response.raise_for_status()
+                resp_data = response.json()
+                if "data" in resp_data:
+                    sorted_data = sorted(resp_data["data"], key=lambda x: x.get("index", 0))
+                    return [[float(x) for x in item["embedding"]] for item in sorted_data]
+                raise ValueError(f"Unexpected response structure from Voyage API: {resp_data}")
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"Voyage API request failed with status {e.response.status_code}: {e.response.text}") from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to communicate with Voyage API: {e}") from e
+
+
+class CohereEmbedder:
+    """
+    Lightweight, API-driven embedder using Cohere's Embeddings API.
+    Can be used via raw HTTP requests (using standard urllib) or via an optionally provided client SDK.
+    """
+
+    def __init__(
+        self,
+        model_name: str = "embed-english-v3.0",
+        api_key: Optional[str] = None,
+        base_url: str = "https://api.cohere.com/v2",
+        client: Optional[Any] = None,
+    ) -> None:
+        self.model_name = model_name
+        self.api_key = api_key or os.environ.get("COHERE_API_KEY")
+        self.base_url = base_url.rstrip("/")
+        self.client = client
+
+    def embed_query(self, text: str) -> Sequence[float]:
+        if self.client is not None:
+            if hasattr(self.client, "embed"):
+                try:
+                    resp = self.client.embed(
+                        texts=[text],
+                        model=self.model_name,
+                        input_type="search_query",
+                        embedding_types=["float"],
+                    )
+                    if hasattr(resp, "embeddings") and hasattr(resp.embeddings, "float") and len(resp.embeddings.float) > 0:
+                        return [float(x) for x in resp.embeddings.float[0]]
+                except Exception:
+                    resp = self.client.embed(
+                        texts=[text],
+                        model=self.model_name,
+                        input_type="search_query",
+                    )
+                    if hasattr(resp, "embeddings") and len(resp.embeddings) > 0:
+                        return [float(x) for x in resp.embeddings[0]]
+            raise ValueError("Provided client does not have embed method or expected structure.")
+
+        if not self.api_key:
+            raise ValueError(
+                "Cohere API key is required. Pass it via api_key or set the COHERE_API_KEY environment variable."
+            )
+
+        url = f"{self.base_url}/embed"
+        payload = {
+            "model": self.model_name,
+            "texts": [text],
+            "input_type": "search_query",
+            "embedding_types": ["float"],
+        }
+        
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+        
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                resp_data = json.loads(response.read().decode("utf-8"))
+                if "embeddings" in resp_data and "float" in resp_data["embeddings"] and len(resp_data["embeddings"]["float"]) > 0:
+                    return [float(x) for x in resp_data["embeddings"]["float"][0]]
+                if "embeddings" in resp_data and len(resp_data["embeddings"]) > 0:
+                    return [float(x) for x in resp_data["embeddings"][0]]
+                raise ValueError(f"Unexpected response structure from Cohere API: {resp_data}")
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8")
+            raise RuntimeError(f"Cohere API request failed with status {e.code}: {err_body}") from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to communicate with Cohere API: {e}") from e
+
+    async def aembed_query(self, text: str) -> Sequence[float]:
+        if self.client is not None:
+            if hasattr(self.client, "embed"):
+                func = self.client.embed
+                try:
+                    if asyncio.iscoroutinefunction(func):
+                        resp = await func(
+                            texts=[text],
+                            model=self.model_name,
+                            input_type="search_query",
+                            embedding_types=["float"],
+                        )
+                    else:
+                        resp = func(
+                            texts=[text],
+                            model=self.model_name,
+                            input_type="search_query",
+                            embedding_types=["float"],
+                        )
+                    if hasattr(resp, "embeddings") and hasattr(resp.embeddings, "float") and len(resp.embeddings.float) > 0:
+                        return [float(x) for x in resp.embeddings.float[0]]
+                except Exception:
+                    if asyncio.iscoroutinefunction(func):
+                        resp = await func(
+                            texts=[text],
+                            model=self.model_name,
+                            input_type="search_query",
+                        )
+                    else:
+                        resp = func(
+                            texts=[text],
+                            model=self.model_name,
+                            input_type="search_query",
+                        )
+                    if hasattr(resp, "embeddings") and len(resp.embeddings) > 0:
+                        return [float(x) for x in resp.embeddings[0]]
+            raise ValueError("Provided client does not have embed method or expected structure.")
+
+        if not self.api_key:
+            raise ValueError(
+                "Cohere API key is required. Pass it via api_key or set the COHERE_API_KEY environment variable."
+            )
+
+        url = f"{self.base_url}/embed"
+        payload = {
+            "model": self.model_name,
+            "texts": [text],
+            "input_type": "search_query",
+            "embedding_types": ["float"],
+        }
+        
+        try:
+            import httpx
+        except ImportError:
+            raise ImportError(
+                "httpx is required for async embedding calls. "
+                "Please install it with: pip install httpx"
+            )
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as httpx_client:
+                response = await httpx_client.post(
+                    url,
+                    json=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {self.api_key}",
+                    }
+                )
+                response.raise_for_status()
+                resp_data = response.json()
+                if "embeddings" in resp_data and "float" in resp_data["embeddings"] and len(resp_data["embeddings"]["float"]) > 0:
+                    return [float(x) for x in resp_data["embeddings"]["float"][0]]
+                if "embeddings" in resp_data and len(resp_data["embeddings"]) > 0:
+                    return [float(x) for x in resp_data["embeddings"][0]]
+                raise ValueError(f"Unexpected response structure from Cohere API: {resp_data}")
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"Cohere API request failed with status {e.response.status_code}: {e.response.text}") from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to communicate with Cohere API: {e}") from e
+
+    def embed_queries(self, texts: List[str]) -> List[Sequence[float]]:
+        if not texts:
+            return []
+        if self.client is not None:
+            if hasattr(self.client, "embed"):
+                try:
+                    resp = self.client.embed(
+                        texts=texts,
+                        model=self.model_name,
+                        input_type="search_document",
+                        embedding_types=["float"],
+                    )
+                    if hasattr(resp, "embeddings") and hasattr(resp.embeddings, "float"):
+                        return [[float(x) for x in emb] for emb in resp.embeddings.float]
+                except Exception:
+                    resp = self.client.embed(
+                        texts=texts,
+                        model=self.model_name,
+                        input_type="search_document",
+                    )
+                    if hasattr(resp, "embeddings"):
+                        return [[float(x) for x in emb] for emb in resp.embeddings]
+            raise ValueError("Provided client does not have embed method or expected structure.")
+
+        if not self.api_key:
+            raise ValueError(
+                "Cohere API key is required. Pass it via api_key or set the COHERE_API_KEY environment variable."
+            )
+
+        url = f"{self.base_url}/embed"
+        payload = {
+            "model": self.model_name,
+            "texts": texts,
+            "input_type": "search_document",
+            "embedding_types": ["float"],
+        }
+        
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+        
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                resp_data = json.loads(response.read().decode("utf-8"))
+                if "embeddings" in resp_data and "float" in resp_data["embeddings"]:
+                    return [[float(x) for x in emb] for emb in resp_data["embeddings"]["float"]]
+                if "embeddings" in resp_data:
+                    return [[float(x) for x in emb] for emb in resp_data["embeddings"]]
+                raise ValueError(f"Unexpected response structure from Cohere API: {resp_data}")
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8")
+            raise RuntimeError(f"Cohere API request failed with status {e.code}: {err_body}") from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to communicate with Cohere API: {e}") from e
+
+    async def aembed_queries(self, texts: List[str]) -> List[Sequence[float]]:
+        if not texts:
+            return []
+        if self.client is not None:
+            if hasattr(self.client, "embed"):
+                func = self.client.embed
+                try:
+                    if asyncio.iscoroutinefunction(func):
+                        resp = await func(
+                            texts=texts,
+                            model=self.model_name,
+                            input_type="search_document",
+                            embedding_types=["float"],
+                        )
+                    else:
+                        resp = func(
+                            texts=texts,
+                            model=self.model_name,
+                            input_type="search_document",
+                            embedding_types=["float"],
+                        )
+                    if hasattr(resp, "embeddings") and hasattr(resp.embeddings, "float"):
+                        return [[float(x) for x in emb] for emb in resp.embeddings.float]
+                except Exception:
+                    if asyncio.iscoroutinefunction(func):
+                        resp = await func(
+                            texts=texts,
+                            model=self.model_name,
+                            input_type="search_document",
+                        )
+                    else:
+                        resp = func(
+                            texts=texts,
+                            model=self.model_name,
+                            input_type="search_document",
+                        )
+                    if hasattr(resp, "embeddings"):
+                        return [[float(x) for x in emb] for emb in resp.embeddings]
+            raise ValueError("Provided client does not have embed method or expected structure.")
+
+        if not self.api_key:
+            raise ValueError(
+                "Cohere API key is required. Pass it via api_key or set the COHERE_API_KEY environment variable."
+            )
+
+        url = f"{self.base_url}/embed"
+        payload = {
+            "model": self.model_name,
+            "texts": texts,
+            "input_type": "search_document",
+            "embedding_types": ["float"],
+        }
+        
+        try:
+            import httpx
+        except ImportError:
+            raise ImportError(
+                "httpx is required for async embedding calls. "
+                "Please install it with: pip install httpx"
+            )
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as httpx_client:
+                response = await httpx_client.post(
+                    url,
+                    json=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {self.api_key}",
+                    }
+                )
+                response.raise_for_status()
+                resp_data = response.json()
+                if "embeddings" in resp_data and "float" in resp_data["embeddings"]:
+                    return [[float(x) for x in emb] for emb in resp_data["embeddings"]["float"]]
+                if "embeddings" in resp_data:
+                    return [[float(x) for x in emb] for emb in resp_data["embeddings"]]
+                raise ValueError(f"Unexpected response structure from Cohere API: {resp_data}")
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"Cohere API request failed with status {e.response.status_code}: {e.response.text}") from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to communicate with Cohere API: {e}") from e
+
+
+class LlamaCppEmbedder:
+    """
+    Lightweight, API-driven embedder using a local llama.cpp server's OpenAI-compatible endpoint.
+    Defaults to endpoint: http://localhost:8080/v1
+    """
+
+    def __init__(
+        self,
+        base_url: str = "http://localhost:8080/v1",
+        model_name: str = "local",
+        api_key: Optional[str] = None,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.model_name = model_name
+        self.api_key = api_key or os.environ.get("LLAMACPP_API_KEY")
+
+    def _call_raw_fallback(self, texts: List[str]) -> List[Sequence[float]]:
+        base = self.base_url
+        if base.endswith("/v1"):
+            base = base[:-3]
+        url = f"{base}/embedding"
+        
+        embeddings = []
+        for text in texts:
+            payload = {"content": text}
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as response:
+                resp_data = json.loads(response.read().decode("utf-8"))
+                if "embedding" in resp_data:
+                    embeddings.append([float(x) for x in resp_data["embedding"]])
+                else:
+                    raise ValueError(f"Unexpected response structure from llama.cpp API: {resp_data}")
+        return embeddings
+
+    def embed_query(self, text: str) -> Sequence[float]:
+        url = f"{self.base_url}/embeddings"
+        payload = {
+            "input": text,
+            "model": self.model_name,
+        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                resp_data = json.loads(response.read().decode("utf-8"))
+                if "data" in resp_data and len(resp_data["data"]) > 0 and "embedding" in resp_data["data"][0]:
+                    return [float(x) for x in resp_data["data"][0]["embedding"]]
+                raise ValueError(f"Unexpected response structure from llama.cpp API: {resp_data}")
+        except urllib.error.HTTPError as e:
+            try:
+                fallback_results = self._call_raw_fallback([text])
+                if len(fallback_results) > 0:
+                    return fallback_results[0]
+            except Exception:
+                pass
+            err_body = e.read().decode("utf-8")
+            raise RuntimeError(f"llama.cpp API request failed with status {e.code}: {err_body}") from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to communicate with llama.cpp API: {e}") from e
+
+    async def _acall_raw_fallback(self, texts: List[str]) -> List[Sequence[float]]:
+        try:
+            import httpx
+        except ImportError:
+            raise ImportError(
+                "httpx is required for async embedding calls. "
+                "Please install it with: pip install httpx"
+            )
+
+        base = self.base_url
+        if base.endswith("/v1"):
+            base = base[:-3]
+        url = f"{base}/embedding"
+        
+        embeddings = []
+        async with httpx.AsyncClient(timeout=30.0) as httpx_client:
+            for text in texts:
+                response = await httpx_client.post(
+                    url,
+                    json={"content": text},
+                    headers={"Content-Type": "application/json"}
+                )
+                response.raise_for_status()
+                resp_data = response.json()
+                if "embedding" in resp_data:
+                    embeddings.append([float(x) for x in resp_data["embedding"]])
+                else:
+                    raise ValueError(f"Unexpected response structure from llama.cpp API: {resp_data}")
+        return embeddings
+
+    async def aembed_query(self, text: str) -> Sequence[float]:
+        url = f"{self.base_url}/embeddings"
+        payload = {
+            "input": text,
+            "model": self.model_name,
+        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        try:
+            import httpx
+        except ImportError:
+            raise ImportError(
+                "httpx is required for async embedding calls. "
+                "Please install it with: pip install httpx"
+            )
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as httpx_client:
+                response = await httpx_client.post(
+                    url,
+                    json=payload,
+                    headers=headers
+                )
+                response.raise_for_status()
+                resp_data = response.json()
+                if "data" in resp_data and len(resp_data["data"]) > 0 and "embedding" in resp_data["data"][0]:
+                    return [float(x) for x in resp_data["data"][0]["embedding"]]
+                raise ValueError(f"Unexpected response structure from llama.cpp API: {resp_data}")
+        except httpx.HTTPStatusError as e:
+            try:
+                fallback_results = await self._acall_raw_fallback([text])
+                if len(fallback_results) > 0:
+                    return fallback_results[0]
+            except Exception:
+                pass
+            raise RuntimeError(f"llama.cpp API request failed with status {e.response.status_code}: {e.response.text}") from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to communicate with llama.cpp API: {e}") from e
+
+    def embed_queries(self, texts: List[str]) -> List[Sequence[float]]:
+        if not texts:
+            return []
+        url = f"{self.base_url}/embeddings"
+        payload = {
+            "input": texts,
+            "model": self.model_name,
+        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                resp_data = json.loads(response.read().decode("utf-8"))
+                if "data" in resp_data:
+                    sorted_data = sorted(resp_data["data"], key=lambda x: x.get("index", 0))
+                    return [[float(x) for x in item["embedding"]] for item in sorted_data]
+                raise ValueError(f"Unexpected response structure from llama.cpp API: {resp_data}")
+        except urllib.error.HTTPError as e:
+            try:
+                return self._call_raw_fallback(texts)
+            except Exception:
+                pass
+            err_body = e.read().decode("utf-8")
+            raise RuntimeError(f"llama.cpp API request failed with status {e.code}: {err_body}") from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to communicate with llama.cpp API: {e}") from e
+
+    async def aembed_queries(self, texts: List[str]) -> List[Sequence[float]]:
+        if not texts:
+            return []
+        url = f"{self.base_url}/embeddings"
+        payload = {
+            "input": texts,
+            "model": self.model_name,
+        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        try:
+            import httpx
+        except ImportError:
+            raise ImportError(
+                "httpx is required for async embedding calls. "
+                "Please install it with: pip install httpx"
+            )
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as httpx_client:
+                response = await httpx_client.post(
+                    url,
+                    json=payload,
+                    headers=headers
+                )
+                response.raise_for_status()
+                resp_data = response.json()
+                if "data" in resp_data:
+                    sorted_data = sorted(resp_data["data"], key=lambda x: x.get("index", 0))
+                    return [[float(x) for x in item["embedding"]] for item in sorted_data]
+                raise ValueError(f"Unexpected response structure from llama.cpp API: {resp_data}")
+        except httpx.HTTPStatusError as e:
+            try:
+                return await self._acall_raw_fallback(texts)
+            except Exception:
+                pass
+            raise RuntimeError(f"llama.cpp API request failed with status {e.response.status_code}: {e.response.text}") from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to communicate with llama.cpp API: {e}") from e
+

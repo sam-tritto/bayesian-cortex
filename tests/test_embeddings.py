@@ -3,7 +3,14 @@ import urllib.error
 from unittest.mock import MagicMock, patch
 import pytest
 
-from bayesian_cortex.embeddings import GeminiEmbedder, OpenAIEmbedder, SQLiteVectorStore
+from bayesian_cortex.embeddings import (
+    AnthropicEmbedder,
+    CohereEmbedder,
+    GeminiEmbedder,
+    LlamaCppEmbedder,
+    OpenAIEmbedder,
+    SQLiteVectorStore,
+)
 
 
 def test_gemini_embedder_missing_key():
@@ -306,4 +313,194 @@ def test_router_with_sqlite_vector_store(tmp_path, mem_storage, det_embedder):
         assert context_key_1 != context_key_search
     finally:
         vector_store.close()
+
+
+# Anthropic Embedder Tests
+def test_anthropic_embedder_missing_key():
+    with patch.dict("os.environ", {}, clear=True):
+        embedder = AnthropicEmbedder(api_key=None)
+        with pytest.raises(ValueError, match="Anthropic/Voyage API key is required"):
+            embedder.embed_query("test text")
+
+
+@patch("urllib.request.urlopen")
+def test_anthropic_embedder_rest_success(mock_urlopen):
+    mock_response = MagicMock()
+    mock_response.read.return_value = json.dumps({
+        "data": [
+            {
+                "embedding": [0.1, 0.2, 0.3],
+                "index": 0
+            }
+        ]
+    }).encode("utf-8")
+    mock_urlopen.return_value.__enter__.return_value = mock_response
+
+    embedder = AnthropicEmbedder(api_key="fake-voyage-key", model_name="voyage-3")
+    result = embedder.embed_query("hello")
+
+    assert result == [0.1, 0.2, 0.3]
+
+    args, kwargs = mock_urlopen.call_args
+    req = args[0]
+    assert req.full_url == "https://api.voyageai.com/v1/embeddings"
+    assert req.method == "POST"
+    assert req.headers["Authorization"] == "Bearer fake-voyage-key"
+    
+    body_data = json.loads(req.data.decode("utf-8"))
+    assert body_data == {
+        "input": ["hello"],
+        "model": "voyage-3",
+        "input_type": "query"
+    }
+
+
+@patch("urllib.request.urlopen")
+def test_anthropic_embedder_rest_success_batch(mock_urlopen):
+    mock_response = MagicMock()
+    mock_response.read.return_value = json.dumps({
+        "data": [
+            {
+                "embedding": [0.4, 0.5],
+                "index": 1
+            },
+            {
+                "embedding": [0.1, 0.2],
+                "index": 0
+            }
+        ]
+    }).encode("utf-8")
+    mock_urlopen.return_value.__enter__.return_value = mock_response
+
+    embedder = AnthropicEmbedder(api_key="fake-voyage-key")
+    result = embedder.embed_queries(["hello", "world"])
+
+    assert result == [[0.1, 0.2], [0.4, 0.5]]
+
+
+def test_anthropic_embedder_sdk_client():
+    mock_client = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.embeddings = [[0.9, 0.8]]
+    mock_client.embed.return_value = mock_resp
+
+    embedder = AnthropicEmbedder(client=mock_client)
+    result = embedder.embed_query("sdk hello")
+
+    assert result == [0.9, 0.8]
+    mock_client.embed.assert_called_once_with(
+        ["sdk hello"], model="voyage-3", input_type="query"
+    )
+
+
+# Cohere Embedder Tests
+def test_cohere_embedder_missing_key():
+    with patch.dict("os.environ", {}, clear=True):
+        embedder = CohereEmbedder(api_key=None)
+        with pytest.raises(ValueError, match="Cohere API key is required"):
+            embedder.embed_query("test text")
+
+
+@patch("urllib.request.urlopen")
+def test_cohere_embedder_rest_success(mock_urlopen):
+    mock_response = MagicMock()
+    mock_response.read.return_value = json.dumps({
+        "embeddings": {
+            "float": [
+                [0.5, 0.6, 0.7]
+            ]
+        }
+    }).encode("utf-8")
+    mock_urlopen.return_value.__enter__.return_value = mock_response
+
+    embedder = CohereEmbedder(api_key="fake-cohere-key")
+    result = embedder.embed_query("hello")
+
+    assert result == [0.5, 0.6, 0.7]
+
+    args, kwargs = mock_urlopen.call_args
+    req = args[0]
+    assert req.full_url == "https://api.cohere.com/v2/embed"
+    assert req.method == "POST"
+    
+    body_data = json.loads(req.data.decode("utf-8"))
+    assert body_data == {
+        "model": "embed-english-v3.0",
+        "texts": ["hello"],
+        "input_type": "search_query",
+        "embedding_types": ["float"]
+    }
+
+
+def test_cohere_embedder_sdk_client_v2():
+    mock_client = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.embeddings.float = [[0.1, 0.2]]
+    mock_client.embed.return_value = mock_resp
+
+    embedder = CohereEmbedder(client=mock_client)
+    result = embedder.embed_query("cohere sdk")
+
+    assert result == [0.1, 0.2]
+    mock_client.embed.assert_called_once_with(
+        texts=["cohere sdk"],
+        model="embed-english-v3.0",
+        input_type="search_query",
+        embedding_types=["float"]
+    )
+
+
+# LlamaCpp Embedder Tests
+@patch("urllib.request.urlopen")
+def test_llamacpp_embedder_rest_success(mock_urlopen):
+    mock_response = MagicMock()
+    mock_response.read.return_value = json.dumps({
+        "data": [
+            {
+                "embedding": [0.01, -0.02],
+                "index": 0
+            }
+        ]
+    }).encode("utf-8")
+    mock_urlopen.return_value.__enter__.return_value = mock_response
+
+    embedder = LlamaCppEmbedder(base_url="http://localhost:8080/v1", model_name="local-llama")
+    result = embedder.embed_query("hello")
+
+    assert result == [0.01, -0.02]
+
+    args, kwargs = mock_urlopen.call_args
+    req = args[0]
+    assert req.full_url == "http://localhost:8080/v1/embeddings"
+    
+    body_data = json.loads(req.data.decode("utf-8"))
+    assert body_data == {
+        "input": "hello",
+        "model": "local-llama"
+    }
+
+
+@patch("urllib.request.urlopen")
+def test_llamacpp_embedder_rest_fallback(mock_urlopen):
+    mock_fp = MagicMock()
+    mock_fp.read.return_value = b"Not Found"
+    error = urllib.error.HTTPError(
+        url="http://localhost:8080/v1/embeddings", code=404, msg="Not Found", hdrs=None, fp=mock_fp
+    )
+    
+    mock_fb_response = MagicMock()
+    mock_fb_response.read.return_value = json.dumps({
+        "embedding": [0.88, 0.99]
+    }).encode("utf-8")
+    
+    mock_context_manager = MagicMock()
+    mock_context_manager.__enter__.return_value = mock_fb_response
+    
+    mock_urlopen.side_effect = [error, mock_context_manager]
+
+    embedder = LlamaCppEmbedder(base_url="http://localhost:8080/v1")
+    result = embedder.embed_query("hello fallback")
+
+    assert result == [0.88, 0.99]
+    assert mock_urlopen.call_count == 2
 
