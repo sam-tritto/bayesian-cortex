@@ -42,7 +42,14 @@ from bayesian_cortex.storage import (
     SQLiteStorage,
 )
 
+try:
+    import importlib.metadata as _metadata
+    __version__ = _metadata.version("bayesian_cortex")
+except Exception:
+    __version__ = "0.1.3"
+
 __all__ = [
+    "__version__",
     "BayesianRouter",
     "AsyncBayesianRouter",
     "BaseStorage",

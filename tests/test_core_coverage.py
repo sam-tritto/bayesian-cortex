@@ -726,3 +726,9 @@ class TestFeedbackStrictMode:
         router = AsyncBayesianRouter(storage=storage)
         result = await router.afeedback("ctx", "tool_a", success=True, strict=False)
         assert result == (1.0, 1.0)
+
+
+def test_version_exposure():
+    from bayesian_cortex import __version__
+    assert isinstance(__version__, str)
+    assert len(__version__.split(".")) >= 2
