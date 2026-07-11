@@ -1,5 +1,6 @@
 import json
 import urllib.error
+from email.message import Message
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -57,7 +58,7 @@ def test_gemini_embedder_rest_http_error(mock_urlopen):
     mock_fp = MagicMock()
     mock_fp.read.return_value = b"Invalid API key or model"
     error = urllib.error.HTTPError(
-        url="http://fake", code=400, msg="Bad Request", hdrs=None, fp=mock_fp
+        url="http://fake", code=400, msg="Bad Request", hdrs=Message(), fp=mock_fp
     )
     mock_urlopen.side_effect = error
 
@@ -199,7 +200,7 @@ def test_openai_embedder_rest_http_error(mock_urlopen):
     mock_fp = MagicMock()
     mock_fp.read.return_value = b"Unauthorized API Key"
     error = urllib.error.HTTPError(
-        url="http://fake", code=401, msg="Unauthorized", hdrs=None, fp=mock_fp
+        url="http://fake", code=401, msg="Unauthorized", hdrs=Message(), fp=mock_fp
     )
     mock_urlopen.side_effect = error
 
@@ -505,7 +506,7 @@ def test_llamacpp_embedder_rest_fallback(mock_urlopen):
         url="http://localhost:8080/v1/embeddings",
         code=404,
         msg="Not Found",
-        hdrs=None,
+        hdrs=Message(),
         fp=mock_fp,
     )
 

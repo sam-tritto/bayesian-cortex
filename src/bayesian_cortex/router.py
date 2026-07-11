@@ -1531,7 +1531,7 @@ class BayesianRouter:
         try:
             contexts_to_embed = []
             contexts_to_embed_indices = []
-            prepared_feedbacks = []
+            prepared_feedbacks: List[Dict[str, Any]] = []
 
             for fb in feedbacks:
                 success = fb.get("success")
