@@ -224,3 +224,36 @@ async def test_async_lints_routing_and_feedback(async_sqlite_storage, det_embedd
     assert "tool_math" in final_choices
 
     # No manual close needed for fixture-managed storage
+
+
+def test_linear_numerical_safety():
+    import numpy as np
+    from bayesian_cortex.router import _linear_score, _linear_posterior
+
+    x = np.array([1.0])
+    theta = np.array([0.5])
+    precision = np.array([[-1.0]])  # negative definite to force negative dot product
+
+    # Test _linear_score safety
+    score = _linear_score(
+        x_augmented=x,
+        theta_hat=theta,
+        precision=precision,
+        mode="linucb",
+        exploration_weight=1.0,
+        diagonal_covariance=False,
+    )
+    assert not np.isnan(score)
+    assert score == 0.5
+
+    # Test _linear_posterior safety
+    expected_reward, uncertainty = _linear_posterior(
+        x_augmented=x,
+        precision=precision,
+        reward_vector=np.array([-0.5]),  # theta_hat = solve(precision, reward_vector) -> -0.5 / -1.0 = 0.5
+        diagonal_covariance=False,
+    )
+    assert not np.isnan(expected_reward)
+    assert not np.isnan(uncertainty)
+    assert expected_reward == 0.5
+    assert uncertainty == 0.0
