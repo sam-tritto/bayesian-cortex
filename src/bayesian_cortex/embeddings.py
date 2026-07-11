@@ -1171,15 +1171,15 @@ class AnthropicEmbedder:
                 ):
                     return [float(x) for x in resp_data["data"][0]["embedding"]]
                 raise EmbeddingError(
-                    f"Unexpected response structure from Voyage API: {resp_data}"
+                    f"Unexpected response structure from Anthropic API: {resp_data}"
                 )
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8")
             raise EmbeddingError(
-                f"Voyage API request failed with status {e.code}: {err_body}"
+                f"Anthropic API request failed with status {e.code}: {err_body}"
             ) from e
         except Exception as e:
-            raise EmbeddingError(f"Failed to communicate with Voyage API: {e}") from e
+            raise EmbeddingError(f"Failed to communicate with Anthropic API: {e}") from e
 
     async def aembed_query(self, text: str) -> Sequence[float]:
         if self.client is not None:
@@ -1234,14 +1234,14 @@ class AnthropicEmbedder:
                 ):
                     return [float(x) for x in resp_data["data"][0]["embedding"]]
                 raise EmbeddingError(
-                    f"Unexpected response structure from Voyage API: {resp_data}"
+                    f"Unexpected response structure from Anthropic API: {resp_data}"
                 )
         except httpx.HTTPStatusError as e:
             raise EmbeddingError(
-                f"Voyage API request failed with status {e.response.status_code}: {e.response.text}"
+                f"Anthropic API request failed with status {e.response.status_code}: {e.response.text}"
             ) from e
         except Exception as e:
-            raise EmbeddingError(f"Failed to communicate with Voyage API: {e}") from e
+            raise EmbeddingError(f"Failed to communicate with Anthropic API: {e}") from e
 
     def embed_queries(self, texts: List[str]) -> List[Sequence[float]]:
         if not texts:
@@ -1290,15 +1290,15 @@ class AnthropicEmbedder:
                         [float(x) for x in item["embedding"]] for item in sorted_data
                     ]
                 raise EmbeddingError(
-                    f"Unexpected response structure from Voyage API: {resp_data}"
+                    f"Unexpected response structure from Anthropic API: {resp_data}"
                 )
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8")
             raise EmbeddingError(
-                f"Voyage API request failed with status {e.code}: {err_body}"
+                f"Anthropic API request failed with status {e.code}: {err_body}"
             ) from e
         except Exception as e:
-            raise EmbeddingError(f"Failed to communicate with Voyage API: {e}") from e
+            raise EmbeddingError(f"Failed to communicate with Anthropic API: {e}") from e
 
     async def aembed_queries(self, texts: List[str]) -> List[Sequence[float]]:
         if not texts:
@@ -1358,14 +1358,14 @@ class AnthropicEmbedder:
                         [float(x) for x in item["embedding"]] for item in sorted_data
                     ]
                 raise EmbeddingError(
-                    f"Unexpected response structure from Voyage API: {resp_data}"
+                    f"Unexpected response structure from Anthropic API: {resp_data}"
                 )
         except httpx.HTTPStatusError as e:
             raise EmbeddingError(
-                f"Voyage API request failed with status {e.response.status_code}: {e.response.text}"
+                f"Anthropic API request failed with status {e.response.status_code}: {e.response.text}"
             ) from e
         except Exception as e:
-            raise EmbeddingError(f"Failed to communicate with Voyage API: {e}") from e
+            raise EmbeddingError(f"Failed to communicate with Anthropic API: {e}") from e
 
 
 class CohereEmbedder:

@@ -259,3 +259,30 @@ def test_storage_selection_logging(mem_storage, sqlite_storage):
     sql_store.log_feedback("trace_sql_1", 0.0)
     logs_updated = sql_store.get_selection_logs()
     assert logs_updated[0]["reward"] == 0.0
+
+
+def test_sqlite_storage_retry_on_lock():
+    from unittest.mock import patch
+    
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        db_path = tmp.name
+        
+    try:
+        storage = SQLiteStorage(db_path)
+        
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = [
+            sqlite3.OperationalError("database is locked"),
+            sqlite3.OperationalError("database is locked"),
+            MagicMock()
+        ]
+        
+        with patch.object(storage, "_get_conn", return_value=mock_conn):
+            # This calls @_retry_on_lock decorated method
+            storage.update_candidate_params("ctx_retry", "tool_retry", 3.0, 4.0)
+            
+        assert mock_conn.execute.call_count == 3
+        storage.close()
+    finally:
+        if os.path.exists(db_path):
+            os.remove(db_path)

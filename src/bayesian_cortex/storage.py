@@ -462,6 +462,32 @@ class InMemoryStorage(BaseStorage):
             return sorted(self._selection_logs.values(), key=lambda x: x["timestamp"])
 
 
+def _retry_on_lock(max_retries: int = 5, initial_delay: float = 0.05, max_delay: float = 1.0):
+    """
+    Decorator to retry synchronous database operations that fail due to locking.
+    Uses exponential backoff with jitter.
+    """
+    import functools
+    import random
+    import time
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            delay = initial_delay
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except sqlite3.OperationalError as e:
+                    if attempt == max_retries or "locked" not in str(e).lower():
+                        raise
+                    sleep_time = delay * (0.5 + random.random())
+                    time.sleep(sleep_time)
+                    delay = min(delay * 2, max_delay)
+        return wrapper
+    return decorator
+
+
 class SQLiteStorage(BaseStorage):
     """
     SQLite-backed storage for persistent local storage with thread safety.
@@ -470,6 +496,11 @@ class SQLiteStorage(BaseStorage):
 
     def __init__(self, db_path: str = "bayesian_cortex.db") -> None:
         self.db_path = db_path
+        self._init_db()
+        self._local = threading.local()
+
+    @_retry_on_lock()
+    def _init_db(self) -> None:
         # Initialize the database tables if they do not exist
         conn = self._connect()
         try:
@@ -514,8 +545,6 @@ class SQLiteStorage(BaseStorage):
                     """)
         finally:
             conn.close()
-
-        self._local = threading.local()
 
     def _migrate_database(self, conn: sqlite3.Connection) -> None:
         cursor = conn.cursor()
@@ -587,6 +616,7 @@ class SQLiteStorage(BaseStorage):
         )
         return cursor.fetchone() is not None
 
+    @_retry_on_lock()
     def update_candidate_params(
         self, context_key: str, candidate_name: str, alpha: float, beta: float
     ) -> None:
@@ -603,6 +633,7 @@ class SQLiteStorage(BaseStorage):
                 (context_key, candidate_name, alpha, beta),
             )
 
+    @_retry_on_lock()
     def decay_and_update(
         self, context_key: str, candidate_name: str, decay_factor: float, reward: float
     ) -> Tuple[float, float]:
@@ -651,6 +682,7 @@ class SQLiteStorage(BaseStorage):
         row = cursor.fetchone()
         return row[0] if row is not None else None
 
+    @_retry_on_lock()
     def save_metadata(self, key: str, value: str) -> None:
         conn = self._get_conn()
         with conn:
@@ -662,6 +694,7 @@ class SQLiteStorage(BaseStorage):
                 (key, value),
             )
 
+    @_retry_on_lock()
     def load_all_vectors(self) -> Dict[str, List[float]]:
         conn = self._get_conn()
         cursor = conn.cursor()
@@ -694,6 +727,7 @@ class SQLiteStorage(BaseStorage):
             res[row[0]] = json.loads(row[1])
         return res
 
+    @_retry_on_lock()
     def save_vector(self, context_key: str, vector: Sequence[float]) -> None:
         conn = self._get_conn()
         with conn:
@@ -722,6 +756,7 @@ class SQLiteStorage(BaseStorage):
             return precision, reward_vector
         return None, None
 
+    @_retry_on_lock()
     def decay_and_update_linear(
         self,
         candidate_name: str,
@@ -821,6 +856,7 @@ class SQLiteStorage(BaseStorage):
                 results[(row[0], row[1])] = (float(row[2]), float(row[3]))
         return results
 
+    @_retry_on_lock()
     def update_candidate_params_batch(
         self, params: Dict[Tuple[str, str], Tuple[float, float]]
     ) -> None:
@@ -842,6 +878,7 @@ class SQLiteStorage(BaseStorage):
                 ],
             )
 
+    @_retry_on_lock()
     def decay_and_update_batch(
         self, updates: List[Tuple[str, str, float, float]]
     ) -> List[Tuple[float, float]]:
