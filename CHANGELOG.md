@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.6] — 2026-07-12
+
+### Fixed
+- **Simulation Harness Flakiness**: Seeded `np.random` with a fixed seed (`42`) in `test_simulation_harness.py` to ensure deterministic execution of the statistical drift crossover tests under pytest.
+
 ## [0.1.5] — 2026-07-11
 
 ### Added
