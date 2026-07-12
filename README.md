@@ -16,10 +16,11 @@
 AI agents are built with rigid utility belts. When you ask them to do a task, they guess which tool or prompt to use based on static logic. They don't learn from their mistakes, and they easily fall apart when things fail silently.
 BayesianCortex changes that by introducing a dynamic learning loop and treats routing as a **Contextual Multi-Armed Bandit** using **Thompson Sampling** with exact conjugate updates. 
 
-It manages what AI architects call **"The Golden Triad"** of how an agent interacts with the world, adapting on the fly:
+It manages what AI architects call **"The Golden Triad"** (and sub-agents) of how an agent interacts with the world, adapting on the fly:
 * 🛠️ **Tools (The Hands)**: It learns which specific action (like a SQL database query vs. a web search API) successfully retrieves the data you need without throwing errors.
 * 💡 **Skills (The Mind)**: It tracks which specialized prompt or workflow gets the best results, letting the agent ditch underperforming instructions that cause hallucinations.
 * 📚 **Memory (The Records)**: It figures out exactly which document vault or retrieval strategy holds the true answer to a user's question, cutting down on token waste.
+* 🤖 **Sub-agents (The Assistants)**: It dynamically orchestrates and routes queries to the most capable sub-agent or expert model in a hierarchical supervisor architecture.
 
 In short: It stops your agents from repeating the same mistakes, turning raw AI loops into self-optimizing systems that get smarter with every single run, and adapts in real time to failures, hallucinations, or shifting environment dynamics.
 
