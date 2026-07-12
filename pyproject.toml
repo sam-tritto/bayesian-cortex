@@ -1,6 +1,6 @@
 [project]
 name = "bayesian_cortex"
-version = "0.1.4"
+version = "0.1.5"
 description = "Dynamic Agent Routing via Contextual Multi-Arm Bayesian Bandits"
 readme = "README.md"
 authors = [

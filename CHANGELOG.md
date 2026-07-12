@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.1.5] — 2026-07-11
 
 ### Added
 - **Epistemic Drift / Vector Space Outliers**: Added OOD context outlier detection using cosine similarity threshold matching against historical context clusters. Outliers route to a safe fallback candidate or raise `OutlierContextError` without polluting the database with single-use context clusters.
