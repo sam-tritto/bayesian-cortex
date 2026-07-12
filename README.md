@@ -554,7 +554,9 @@ In addition, the `feedback`, `afeedback`, `feedback_by_trace`, and `afeedback_by
 
 ---
 
-## Integrations & FastMCP Server
+## Integrations & Ecosystem
+
+### 🔌 FastMCP Server
 
 Optimize candidate/skill selection in Claude Code or other MCP hosts by registering a Meta-Candidate to handle dynamic routing, alongside administrative candidates to manage and monitor bandit beliefs.
 
@@ -667,6 +669,81 @@ The `cortex://metrics` dashboard exposes rich, live visuals to monitor routing d
 #### How to open the dashboard:
 * **Using your Agent:** Ask your agent: *"Read the resource `cortex://metrics`"*
 * **Using a GUI Client (e.g., Cursor/Claude Desktop):** Look at the **Resources** pane or icon in the chat interface and click on `cortex://metrics` to open the live view.
+
+### 🦜️🛠️ LangSmith Integration
+
+Because LangSmith is explicitly designed to instrument, monitor, and evaluate complex agent execution hierarchies without forcing you into a specific framework, BayesianCortex fits right into its core paradigms.  
+
+When combined, they create a perfect architectural loop: LangSmith provides the **macro-observability** (tracing exactly what happened), while BayesianCortex handles the **micro-optimization** (deciding what happens next).
+
+#### 1. Dynamic Trace Enrichment (Bandit State in LangSmith)
+
+When an agent executes a step, you can inject the router's current mathematical beliefs directly into LangSmith’s run tree as custom metadata and tags. This means that when you are reviewing an execution path in the LangSmith UI, you won’t just see which tool was chosen; you will see the exact statistical probability that drove the decision.  
+
+You can dynamically record:
+* **The Selected Arm**: The specific tool, skill, or sub-agent chosen.
+* **The Context Cluster ID**: The exact semantic neighborhood hash (`ctx_b91fdac...`) computed by your local embedding model.
+* **The Expected Rate & Uncertainty**: The Alpha/Beta values or posterior variance at the precise millisecond the decision was made.
+
+#### 2. The Automated Feedback Loop (The Core Synergy)
+
+LangSmith features a native Feedback API used to track user interactions (like a thumbs up/down button in a chat UI) or automated "LLM-as-a-judge" evaluation pipelines.  
+
+Instead of treating that data as static logs on a dashboard, you can pipe LangSmith's production feedback scores directly into your `feedback_by_trace()` loop. When an online evaluator or end-user logs a success (score=1) or a failure (score=0) in LangSmith, BayesianCortex instantly updates its underlying covariance matrices. This closes the circuit, translating abstract observability logs into immediate runtime self-healing.  
+
+#### Technical Integration Blueprint
+
+Here is a clean template demonstrating how cleanly the two libraries sit side-by-side using LangSmith's native `@traceable` SDK tools:  
+
+```python
+import langsmith as ls
+from langsmith import Client
+from bayesian_cortex import BayesianRouter
+
+# Initialize your core engines
+ls_client = Client()
+router = BayesianRouter(storage_backend="sqlite", db_path="agent_cortex.db")
+
+@ls.traceable(run_type="chain", name="Adaptive Agent Router")
+def execute_agent_trajectory(user_prompt: str):
+    candidates = ["sql_expert", "python_expert", "web_research"]
+    
+    # 1. Route the prompt context using BayesianCortex math, getting a signed trace ID
+    chosen_arm, trace_id = router.route_with_trace(context_text=user_prompt, candidates=candidates)
+    
+    # 2. Retrieve expected success rate/beliefs and the resolved context cluster
+    cluster_id = router._resolve_context_key(user_prompt)
+    alpha, beta = router.get_candidate_beliefs(context_text=user_prompt, candidate_name=chosen_arm)
+    expected_rate = alpha / (alpha + beta)
+    
+    # 3. Dynamically enrich the active LangSmith trace with bandit telemetry
+    current_run = ls.get_current_run_tree()
+    current_run.metadata.update({
+        "bandit_chosen_arm": chosen_arm,
+        "bandit_trace_id": trace_id,
+        "bandit_context_cluster": cluster_id,
+        "bandit_expected_success_rate": expected_rate
+    })
+    current_run.tags.append(f"arm:{chosen_arm}")
+    
+    # 4. Execute the actual tool/sub-agent logic
+    output = run_selected_arm(chosen_arm, user_prompt)
+    
+    return output, trace_id
+
+# 5. Closing the loop: Processing downstream user or judge feedback
+def handle_production_feedback(run_id: str, trace_id: str, feedback_score: float):
+    # Log the evaluation score directly to LangSmith for tracking
+    ls_client.create_feedback(
+        run_id=run_id,
+        key="correctness",
+        score=feedback_score
+    )
+    
+    # Simultaneously pass the success flag to update your local bandit weights
+    is_success = (feedback_score == 1.0)
+    router.feedback_by_trace(trace_id=trace_id, success=is_success)
+```
 
 ---
 

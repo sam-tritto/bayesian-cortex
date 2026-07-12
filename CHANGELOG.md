@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **LangSmith Integration Guide**: Documented patterns for dynamic trace enrichment (bandit state metadata and tags) and automated closed-loop feedback pipelines via LangSmith.
+
 ## [0.1.4] — 2026-07-10
 
 ### Added
