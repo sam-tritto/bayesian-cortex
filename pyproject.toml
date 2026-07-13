@@ -1,6 +1,6 @@
 [project]
 name = "bayesian_cortex"
-version = "0.1.6"
+version = "0.1.7"
 description = "Dynamic Agent Routing via Contextual Multi-Arm Bayesian Bandits"
 readme = "README.md"
 authors = [
@@ -49,6 +49,9 @@ all = [
     "mcp>=0.1.0",
     "sentence-transformers>=2.2.0",
 ]
+
+[project.scripts]
+bayesian-cortex = "bayesian_cortex.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/sam-tritto/bayesian-cortex"

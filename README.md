@@ -290,6 +290,71 @@ This script initializes a local SQLite bandit database, generates simulated quer
 
 ---
 
+## 💻 Command-Line Interface (CLI)
+
+BayesianCortex features a built-in CLI (`bayesian-cortex`) to query routing decisions, log feedback, monitor posterior beliefs with ASCII sparklines, and run the FastMCP server.
+
+### 1. Start the FastMCP Server (For Claude/Cursor Integration)
+Running the MCP server with the CLI makes integration with tools like Claude Code or Claude Desktop extremely straightforward, avoiding the need for absolute paths to Python files:
+```bash
+bayesian-cortex mcp --db-path mcp_bandit.db --candidates tool1,tool2
+```
+
+### 2. Route Context to Candidates
+Run Thompson Sampling directly from your shell. Outputs the selected candidate and a signed cryptographic trace ID:
+```bash
+bayesian-cortex route --context "Optimize SQL query index" --candidates sql_expert,python_expert --db-path my_bandit.db
+```
+*Output:*
+```
+Selected Candidate: sql_expert
+Trace ID: eyJjdHgiOiAiLi4uIiwgImNhbmRpZGF0ZSI6ICJzcWxfZXhwZXJ0In0=.signature
+```
+Add `--json` for structured script output:
+```bash
+bayesian-cortex route --context "Optimize SQL query index" --json
+```
+
+### 3. Log Outcome Feedback
+Submit execution success or failure using the trace ID:
+```bash
+bayesian-cortex feedback --trace-id <trace_id> --success --db-path my_bandit.db
+```
+Or submit direct float rewards between 0.0 and 1.0:
+```bash
+bayesian-cortex feedback --trace-id <trace_id> --reward 0.85 --db-path my_bandit.db
+```
+
+### 4. Inspect Believed Success Rates
+Display the current posterior parameter beliefs, expected success rates, and ASCII sparklines:
+```bash
+bayesian-cortex beliefs --db-path my_bandit.db
+```
+For a specific context string (resolving nearest clusters using embedders):
+```bash
+bayesian-cortex beliefs --context "SQL DB task" --db-path my_bandit.db
+```
+*Output:*
+```
+Candidate            | Alpha  | Beta   | Mean   | Distribution (Beta PDF)
+-------------------------------------------------------------------------
+sql_expert           | 12.0   | 2.0    | 85.7%  |       ▂▃▄▅▆▇█▇▆
+python_expert        | 1.0    | 1.0    | 50.0%  | 
+```
+
+### 5. Reset Beliefs
+Clear database states entirely or reset parameters back to cold start:
+```bash
+# Reset everything
+bayesian-cortex reset --db-path my_bandit.db
+
+# Reset a specific candidate in all contexts
+bayesian-cortex reset --candidate sql_expert --db-path my_bandit.db
+```
+
+---
+
+
 ## The Core Math Engine
 
 To prevent runtime latency, BayesianCortex avoids heavy Markov Chain Monte Carlo (MCMC) sampling (e.g., PyMC or Stan). Instead, it uses exact closed-form updates and supports two main mathematical modes: **Context Clustering** (Beta-Binomial) and **Linear Contextual Bandits** (LinTS / LinUCB).
@@ -635,9 +700,15 @@ python -m bayesian_cortex.mcp_server
 Configure your agent or host to run the MCP server. Below are standard configuration profiles for popular clients:
 
 #### 💻 Claude Code (CLI Agent)
-Claude Code supports MCP dynamically from your shell. 
+Claude Code supports MCP dynamically from your shell.
 
-* **Automatic CLI Setup:**
+* **CLI Setup (Recommended):**
+  If `bayesian-cortex` is installed in your python environment, you can register it directly:
+  ```bash
+  claude mcp add bayesian-cortex bayesian-cortex mcp --db-path /path/to/bayesian-cortex/mcp_bandit.db
+  ```
+
+* **Legacy Script Setup:**
   ```bash
   claude mcp add bayesian-cortex python3 /path/to/bayesian-cortex/src/bayesian_cortex/mcp_server.py
   ```
@@ -649,11 +720,8 @@ Claude Code supports MCP dynamically from your shell.
   {
     "mcpServers": {
       "bayesian-cortex": {
-        "command": "python3",
-        "args": ["/path/to/bayesian-cortex/src/bayesian_cortex/mcp_server.py"],
-        "env": {
-          "BAYES_DB_PATH": "/path/to/bayesian-cortex/mcp_bandit.db"
-        }
+        "command": "bayesian-cortex",
+        "args": ["mcp", "--db-path", "/path/to/bayesian-cortex/mcp_bandit.db"]
       }
     }
   }
@@ -664,9 +732,8 @@ If using Antigravity or a similar IDE-integrated assistant (e.g., Cursor, Roo Co
 
 - **Type / Transport:** `command`
 - **Name:** `bayesian-cortex`
-- **Command:** `python3`
-- **Arguments:** `/path/to/bayesian-cortex/src/bayesian_cortex/mcp_server.py`
-- **Environment Variables:** `BAYES_DB_PATH=/path/to/bayesian-cortex/mcp_bandit.db`
+- **Command:** `bayesian-cortex`
+- **Arguments:** `mcp --db-path /path/to/bayesian-cortex/mcp_bandit.db`
 
 #### 🖥️ Claude Desktop
 On macOS, Claude Desktop configures its MCP servers via `~/Library/Application Support/Claude/claude_desktop_config.json` (on Windows: `%APPDATA%/Claude/claude_desktop_config.json`).
@@ -676,13 +743,12 @@ Add the following to your config:
 {
   "mcpServers": {
     "bayesian-cortex": {
-      "command": "python3",
+      "command": "bayesian-cortex",
       "args": [
-        "/path/to/bayesian-cortex/src/bayesian_cortex/mcp_server.py"
-      ],
-      "env": {
-        "BAYES_DB_PATH": "/path/to/bayesian-cortex/mcp_bandit.db"
-      }
+        "mcp",
+        "--db-path",
+        "/path/to/bayesian-cortex/mcp_bandit.db"
+      ]
     }
   }
 }

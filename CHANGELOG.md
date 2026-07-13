@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.7] — 2026-07-13
+
+### Added
+- **Command-Line Interface (CLI)**: Added the `bayesian-cortex` command-line tool with subcommands `route`, `feedback`, `beliefs`, `reset`, and `mcp` for querying routes, logging feedback, visualizing posterior distributions, managing databases, and starting the FastMCP server.
+- **CLI Test Suite**: Added complete unit testing in `tests/test_cli.py` verifying all CLI commands, outputs, JSON formatting, and database interactions.
+
 ## [0.1.6] — 2026-07-12
 
 ### Fixed
